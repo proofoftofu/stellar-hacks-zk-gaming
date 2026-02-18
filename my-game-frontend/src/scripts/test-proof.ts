@@ -144,6 +144,7 @@ async function run() {
 
   const p1 = Keypair.fromSecret(p1Secret);
   const p2 = Keypair.fromSecret(p2Secret);
+  const allowHttp = rpcUrl.startsWith('http://');
   const keyByAddress: Record<string, Keypair> = {
     [p1.publicKey()]: p1,
     [p2.publicKey()]: p2,
@@ -153,6 +154,7 @@ async function run() {
     contractId,
     rpcUrl,
     networkPassphrase,
+    allowHttp,
     publicKey: p1.publicKey(),
     ...signerFor(p1, keyByAddress),
   });
@@ -161,6 +163,7 @@ async function run() {
     contractId,
     rpcUrl,
     networkPassphrase,
+    allowHttp,
     publicKey: p2.publicKey(),
     ...signerFor(p2, keyByAddress),
   });
@@ -169,6 +172,7 @@ async function run() {
     contractId,
     rpcUrl,
     networkPassphrase,
+    allowHttp,
     publicKey: p2.publicKey(),
     ...signerFor(p2, keyByAddress),
   });

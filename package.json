@@ -4,9 +4,12 @@
   "type": "module",
   "scripts": {
     "setup": "bun run scripts/setup.ts",
+    "setup:local": "bun run scripts/setup.ts --local",
     "build": "bun run scripts/build.ts",
     "deploy": "bun run scripts/deploy.ts",
+    "deploy:local": "bun run scripts/deploy.ts --local",
     "bindings": "bun run scripts/bindings.ts",
+    "bindings:local": "bun run scripts/bindings.ts --local",
     "create": "bun run scripts/create.ts",
     "publish": "bun run scripts/publish.ts",
     "dev": "bun --cwd=sgs_frontend run dev",

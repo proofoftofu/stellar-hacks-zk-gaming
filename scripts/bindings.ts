@@ -13,10 +13,11 @@ import { getWorkspaceContracts, listContractNames, selectContracts } from "./uti
 
 function usage() {
   console.log(`
-Usage: bun run bindings [contract-name...]
+Usage: bun run bindings [--local] [contract-name...]
 
 Examples:
   bun run bindings
+  bun run bindings --local
   bun run bindings number-guess
   bun run bindings twenty-one number-guess
 `);
@@ -24,7 +25,10 @@ Examples:
 
 console.log("📦 Generating TypeScript bindings...\n");
 
-const args = process.argv.slice(2);
+const rawArgs = process.argv.slice(2);
+const isLocal = rawArgs.includes("--local");
+const args = rawArgs.filter((a) => a !== "--local");
+const network = isLocal ? "local" : "testnet";
 if (args.includes("--help") || args.includes("-h")) {
   usage();
   process.exit(0);
@@ -84,7 +88,7 @@ for (const contract of contractsToBind) {
   const contractId = contractIds[contract.packageName];
   console.log(`Generating bindings for ${contract.packageName}...`);
   try {
-    await $`stellar contract bindings typescript --contract-id ${contractId} --output-dir ${contract.bindingsOutDir} --network testnet --overwrite`;
+    await $`stellar contract bindings typescript --contract-id ${contractId} --output-dir ${contract.bindingsOutDir} --network ${network} --overwrite`;
     console.log(`✅ ${contract.packageName} bindings generated\n`);
   } catch (error) {
     console.error(`❌ Failed to generate ${contract.packageName} bindings:`, error);

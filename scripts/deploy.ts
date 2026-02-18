@@ -45,21 +45,27 @@ async function loadKeypairFactory(): Promise<StellarKeypairFactory> {
 
 function usage() {
   console.log(`
-Usage: bun run deploy [contract-name...]
+Usage: bun run deploy [--local] [contract-name...]
 
 Examples:
   bun run deploy
+  bun run deploy --local
   bun run deploy number-guess
   bun run deploy twenty-one number-guess
 `);
 }
 
-console.log("🚀 Deploying contracts to Stellar testnet...\n");
-const Keypair = await loadKeypairFactory();
+const rawArgs = process.argv.slice(2);
+const isLocal = rawArgs.includes("--local");
+const args = rawArgs.filter((a) => a !== "--local");
 
-const NETWORK = 'testnet';
-const RPC_URL = 'https://soroban-testnet.stellar.org';
-const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
+const NETWORK = isLocal ? 'local' : 'testnet';
+const RPC_URL = isLocal ? 'http://localhost:8000/soroban/rpc' : 'https://soroban-testnet.stellar.org';
+const NETWORK_PASSPHRASE = isLocal
+  ? 'Standalone Network ; February 2017'
+  : 'Test SDF Network ; September 2015';
+const HORIZON_URL = isLocal ? 'http://localhost:8000' : 'https://horizon-testnet.stellar.org';
+const FRIENDBOT_URL = isLocal ? 'http://localhost:8000/friendbot' : 'https://friendbot.stellar.org';
 const EXISTING_GAME_HUB_TESTNET_CONTRACT_ID = 'CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG';
 const ULTRAHONK_VERIFIER_KEY = "ultrahonk-verifier";
 const ULTRAHONK_VERIFIER_MANIFEST_PATH =
@@ -72,6 +78,16 @@ const ULTRAHONK_VK_JSON_CANDIDATES = [
   "zk/ultrahonk_soroban_contract/public/circuits/sudoku_vk.json",
   "zk/ultrahonk_soroban_contract/circuits/target/vk_fields.json",
 ];
+
+if (isLocal) {
+  try {
+    await $`stellar network health --network local`.quiet();
+  } catch {
+    console.error("❌ Local network is not healthy.");
+    console.error("Start it first with: stellar container start local --limits unlimited");
+    process.exit(1);
+  }
+}
 
 function findUltraHonkVerifierWasmPath(): string | null {
   for (const candidate of ULTRAHONK_VERIFIER_WASM_CANDIDATES) {
@@ -99,31 +115,55 @@ function findUltraHonkVkJsonPath(explicitPath: string): string | null {
   return null;
 }
 
-async function testnetAccountExists(address: string): Promise<boolean> {
-  const res = await fetch(`https://horizon-testnet.stellar.org/accounts/${address}`, { method: 'GET' });
-  if (res.status === 404) return false;
-  if (!res.ok) throw new Error(`Horizon error ${res.status} checking ${address}`);
-  return true;
+async function accountExists(address: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${HORIZON_URL}/accounts/${address}`, { method: 'GET' });
+    if (res.status === 404) return false;
+    if (!res.ok) throw new Error(`Horizon error ${res.status} checking ${address}`);
+    return true;
+  } catch {
+    // Local container setups may not expose Horizon on the same endpoint.
+    return false;
+  }
 }
 
-async function ensureTestnetFunded(address: string): Promise<void> {
-  if (await testnetAccountExists(address)) return;
+async function ensureFunded(address: string): Promise<void> {
+  if (!isLocal && await accountExists(address)) return;
+
   console.log(`💰 Funding ${address} via friendbot...`);
-  const fundRes = await fetch(`https://friendbot.stellar.org?addr=${address}`, { method: 'GET' });
-  if (!fundRes.ok) {
-    throw new Error(`Friendbot funding failed (${fundRes.status}) for ${address}`);
+  const friendbotCandidates = [
+    `${FRIENDBOT_URL}?addr=${address}`,
+    `${FRIENDBOT_URL}?address=${address}`,
+  ];
+
+  for (const url of friendbotCandidates) {
+    try {
+      const fundRes = await fetch(url, { method: 'GET' });
+      if (fundRes.ok) {
+        if (isLocal) return;
+        for (let attempt = 0; attempt < 8; attempt++) {
+          await new Promise((r) => setTimeout(r, 500));
+          if (await accountExists(address)) return;
+        }
+      }
+    } catch {
+      // Try next funding endpoint variant.
+    }
   }
-  for (let attempt = 0; attempt < 5; attempt++) {
-    await new Promise((r) => setTimeout(r, 750));
-    if (await testnetAccountExists(address)) return;
+
+  if (isLocal) {
+    // Localnet friendbot may have funded successfully even without Horizon visibility.
+    // If friendbot route is unavailable, this remains a hard failure.
+    throw new Error(`Failed to fund ${address} on localnet friendbot (${FRIENDBOT_URL})`);
   }
+
   throw new Error(`Funded ${address} but it still doesn't appear on Horizon yet`);
 }
 
-async function testnetContractExists(contractId: string): Promise<boolean> {
+async function networkContractExists(contractId: string): Promise<boolean> {
   const tmpPath = join(tmpdir(), `stellar-contract-${contractId}.wasm`);
   try {
-    await $`stellar -q contract fetch --id ${contractId} --network ${NETWORK} --out-file ${tmpPath}`;
+    await $`stellar --no-cache -q contract fetch --id ${contractId} --network ${NETWORK} --out-file ${tmpPath}`;
     return true;
   } catch {
     return false;
@@ -145,11 +185,13 @@ async function wasmHasFunction(wasmPath: string, functionName: string): Promise<
   }
 }
 
-const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) {
   usage();
   process.exit(0);
 }
+
+console.log(`🚀 Deploying contracts to Stellar ${isLocal ? "localnet" : "testnet"}...\n`);
+const Keypair = await loadKeypairFactory();
 
 const allContracts = await getWorkspaceContracts();
 const selection = selectContracts(allContracts, args);
@@ -217,28 +259,38 @@ const existingContractIds: Record<string, string> = {};
 let existingDeployment: any = null;
 if (existsSync("deployment.json")) {
   try {
-    existingDeployment = await Bun.file("deployment.json").json();
-    if (existingDeployment?.contracts && typeof existingDeployment.contracts === "object") {
-      Object.assign(existingContractIds, existingDeployment.contracts);
-    } else {
-      // Backwards compatible fallback
-      if (existingDeployment?.mockGameHubId) existingContractIds["mock-game-hub"] = existingDeployment.mockGameHubId;
-      if (existingDeployment?.twentyOneId) existingContractIds["twenty-one"] = existingDeployment.twentyOneId;
-      if (existingDeployment?.numberGuessId) existingContractIds["number-guess"] = existingDeployment.numberGuessId;
+    const parsedDeployment = await Bun.file("deployment.json").json();
+    const deploymentNetwork = parsedDeployment?.network as string | undefined;
+    const sameNetwork =
+      deploymentNetwork === NETWORK ||
+      (!deploymentNetwork && !isLocal); // old files are assumed testnet
+
+    if (sameNetwork) {
+      existingDeployment = parsedDeployment;
+      if (existingDeployment?.contracts && typeof existingDeployment.contracts === "object") {
+        Object.assign(existingContractIds, existingDeployment.contracts);
+      } else {
+        // Backwards compatible fallback
+        if (existingDeployment?.mockGameHubId) existingContractIds["mock-game-hub"] = existingDeployment.mockGameHubId;
+        if (existingDeployment?.twentyOneId) existingContractIds["twenty-one"] = existingDeployment.twentyOneId;
+        if (existingDeployment?.numberGuessId) existingContractIds["number-guess"] = existingDeployment.numberGuessId;
+      }
     }
   } catch (error) {
     console.warn("⚠️  Warning: Failed to parse deployment.json, continuing...");
   }
 }
 
-for (const contract of allContracts) {
-  if (existingContractIds[contract.packageName]) continue;
-  const envId = getEnvValue(existingEnv, `VITE_${contract.envKey}_CONTRACT_ID`);
-  if (envId) existingContractIds[contract.packageName] = envId;
-}
-if (!existingContractIds[ULTRAHONK_VERIFIER_KEY]) {
-  const verifierEnvId = getEnvValue(existingEnv, "VITE_ULTRAHONK_VERIFIER_CONTRACT_ID");
-  if (verifierEnvId) existingContractIds[ULTRAHONK_VERIFIER_KEY] = verifierEnvId;
+if (!isLocal) {
+  for (const contract of allContracts) {
+    if (existingContractIds[contract.packageName]) continue;
+    const envId = getEnvValue(existingEnv, `VITE_${contract.envKey}_CONTRACT_ID`);
+    if (envId) existingContractIds[contract.packageName] = envId;
+  }
+  if (!existingContractIds[ULTRAHONK_VERIFIER_KEY]) {
+    const verifierEnvId = getEnvValue(existingEnv, "VITE_ULTRAHONK_VERIFIER_CONTRACT_ID");
+    if (verifierEnvId) existingContractIds[ULTRAHONK_VERIFIER_KEY] = verifierEnvId;
+  }
 }
 
 // Handle admin identity (needs to be in Stellar CLI for deployment)
@@ -249,7 +301,7 @@ const adminKeypair = Keypair.random();
 walletAddresses.admin = adminKeypair.publicKey();
 
 try {
-  await ensureTestnetFunded(walletAddresses.admin);
+  await ensureFunded(walletAddresses.admin);
   console.log('✅ admin funded');
 } catch (error) {
   console.error('❌ Failed to ensure admin is funded. Deployment cannot proceed.');
@@ -273,9 +325,9 @@ for (const identity of ['player1', 'player2']) {
   walletSecrets[identity] = keypair.secret();
   console.log(`✅ ${identity}: ${keypair.publicKey()}`);
 
-  // Ensure player accounts exist on testnet (even if reusing keys from .env)
+  // Ensure player accounts exist on selected network (even if reusing keys from .env)
   try {
-    await ensureTestnetFunded(keypair.publicKey());
+    await ensureFunded(keypair.publicKey());
     console.log(`✅ ${identity} funded\n`);
   } catch (error) {
     console.warn(`⚠️  Warning: Failed to ensure ${identity} is funded, continuing anyway...`);
@@ -302,11 +354,11 @@ if (shouldEnsureMock) {
   const candidateMockIds = [
     existingContractIds[mock.packageName],
     existingDeployment?.mockGameHubId,
-    EXISTING_GAME_HUB_TESTNET_CONTRACT_ID,
+    ...(isLocal ? [] : [EXISTING_GAME_HUB_TESTNET_CONTRACT_ID]),
   ].filter(Boolean) as string[];
 
   for (const candidate of candidateMockIds) {
-    if (await testnetContractExists(candidate)) {
+    if (await networkContractExists(candidate)) {
       mockGameHubId = candidate;
       break;
     }
@@ -314,7 +366,7 @@ if (shouldEnsureMock) {
 
   if (mockGameHubId) {
     deployed[mock.packageName] = mockGameHubId;
-    console.log(`✅ Using existing ${mock.packageName} on testnet: ${mockGameHubId}\n`);
+    console.log(`✅ Using existing ${mock.packageName} on ${NETWORK}: ${mockGameHubId}\n`);
   } else {
     if (!await Bun.file(mock.wasmPath).exists()) {
       console.error("❌ Error: Missing WASM build output for mock-game-hub:");
@@ -323,7 +375,7 @@ if (shouldEnsureMock) {
       process.exit(1);
     }
 
-    console.warn(`⚠️  ${mock.packageName} not found on testnet (archived or reset). Deploying a new one...`);
+    console.warn(`⚠️  ${mock.packageName} not found on ${NETWORK}. Deploying a new one...`);
     console.log(`Deploying ${mock.packageName}...`);
     try {
       const result =
@@ -350,7 +402,7 @@ if (deploysMyGame) {
   ].filter(Boolean) as string[];
 
   for (const candidate of candidateVerifierIds) {
-    if (await testnetContractExists(candidate)) {
+    if (await networkContractExists(candidate)) {
       ultrahonkVerifierId = candidate;
       break;
     }
@@ -358,7 +410,7 @@ if (deploysMyGame) {
 
   if (ultrahonkVerifierId) {
     deployed[ULTRAHONK_VERIFIER_KEY] = ultrahonkVerifierId;
-    console.log(`✅ Using existing ${ULTRAHONK_VERIFIER_KEY} on testnet: ${ultrahonkVerifierId}\n`);
+    console.log(`✅ Using existing ${ULTRAHONK_VERIFIER_KEY} on ${NETWORK}: ${ultrahonkVerifierId}\n`);
   } else {
     let verifierWasmPath = findUltraHonkVerifierWasmPath();
     let verifierWasmProtocol = verifierWasmPath
@@ -389,7 +441,7 @@ if (deploysMyGame) {
       process.exit(1);
     }
     if (verifierWasmProtocol !== null && verifierWasmProtocol < 25) {
-      console.error(`❌ Error: Selected verifier WASM is built for protocol ${verifierWasmProtocol}, which is too old for current testnet.`);
+      console.error(`❌ Error: Selected verifier WASM is built for protocol ${verifierWasmProtocol}, which is too old for current network.`);
       console.error(`  WASM: ${verifierWasmPath}`);
       console.error("Expected protocol 25+ after auto-build but got older output.");
       process.exit(1);

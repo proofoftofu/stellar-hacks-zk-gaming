@@ -16,12 +16,26 @@ import { readEnvFile, getEnvValue } from "./utils/env";
 import { getWorkspaceContracts } from "./utils/contracts";
 
 console.log("🎮 Stellar Game Studio Setup\n");
+
+const rawArgs = process.argv.slice(2);
+const isLocal = rawArgs.includes("--local");
+const networkLabel = isLocal ? "localnet" : "testnet";
 console.log("This will:");
 console.log("  0. Install JavaScript dependencies (if needed)");
 console.log("  1. Build Soroban contracts");
-console.log("  2. Deploy to Stellar testnet");
+console.log(`  2. Deploy to Stellar ${networkLabel}`);
 console.log("  3. Generate TypeScript bindings");
-console.log("  4. Write local testnet configuration\n");
+console.log("  4. Write local .env configuration\n");
+
+if (isLocal) {
+  try {
+    await $`stellar network health --network local`.quiet();
+  } catch {
+    console.error("❌ Local network is not healthy.");
+    console.error("Start it first with: stellar container start local --limits unlimited");
+    process.exit(1);
+  }
+}
 
 // Step 0: Ensure JavaScript dependencies are installed
 if (!existsSync("node_modules/@stellar/stellar-sdk")) {
@@ -49,10 +63,14 @@ try {
 
 // Step 2: Deploy contracts
 console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-console.log("Step 2/4: Deploying to testnet");
+console.log(`Step 2/4: Deploying to ${networkLabel}`);
 console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 try {
-  await $`bun run deploy`;
+  if (isLocal) {
+    await $`bun run deploy --local`;
+  } else {
+    await $`bun run deploy`;
+  }
 } catch (error) {
   console.error("\n❌ Deployment failed. Please check the errors above.");
   process.exit(1);
@@ -63,7 +81,11 @@ console.log("\n━━━━━━━━━━━━━━━━━━━━━�
 console.log("Step 3/4: Generating TypeScript bindings");
 console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 try {
-  await $`bun run bindings`;
+  if (isLocal) {
+    await $`bun run bindings --local`;
+  } else {
+    await $`bun run bindings`;
+  }
 } catch (error) {
   console.error("\n❌ Bindings generation failed. Please check the errors above.");
   process.exit(1);
@@ -74,8 +96,10 @@ console.log("\n━━━━━━━━━━━━━━━━━━━━━�
 console.log("Step 4/4: Writing local configuration");
 console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-let rpcUrl = 'https://soroban-testnet.stellar.org';
-let networkPassphrase = 'Test SDF Network ; September 2015';
+let rpcUrl = isLocal ? 'http://localhost:8000/soroban/rpc' : 'https://soroban-testnet.stellar.org';
+let networkPassphrase = isLocal
+  ? 'Standalone Network ; February 2017'
+  : 'Test SDF Network ; September 2015';
 let wallets: { admin: string; player1: string; player2: string } = { admin: '', player1: '', player2: '' };
 const contracts = await getWorkspaceContracts();
 const contractIds: Record<string, string> = {};
