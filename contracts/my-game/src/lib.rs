@@ -1,7 +1,4 @@
 #![no_std]
-extern crate alloc;
-
-use alloc::vec::Vec as StdVec;
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, vec, Address, Bytes,
@@ -424,30 +421,19 @@ impl MyGameContract {
         out.append(&Bytes::from_array(env, &field));
     }
 
-    fn extract_public_inputs_from_proof_blob(env: &Env, proof_blob: &Bytes) -> Result<Bytes, Error> {
-        let mut packed: StdVec<u8> = StdVec::with_capacity(proof_blob.len() as usize);
-        let mut idx = 0u32;
-        while idx < proof_blob.len() {
-            packed.push(proof_blob.get(idx).unwrap());
-            idx += 1;
-        }
-        if packed.len() < 4 {
+    fn extract_public_inputs_from_proof_blob(_env: &Env, proof_blob: &Bytes) -> Result<Bytes, Error> {
+        let total_len = proof_blob.len();
+        if total_len < 4 {
             return Err(Error::InvalidProofBlob);
         }
 
-        let rest = &packed[4..];
-        for pf in [456usize, 440usize] {
-            let proof_len = pf * 32;
-            if rest.len() >= proof_len {
-                let pi_len = rest.len() - proof_len;
+        let rest_len = total_len - 4;
+        for proof_fields in [456u32, 440u32] {
+            let proof_len = proof_fields * 32;
+            if rest_len >= proof_len {
+                let pi_len = rest_len - proof_len;
                 if pi_len % 32 == 0 {
-                    let mut pi = Bytes::new(env);
-                    let mut i = 0usize;
-                    while i < pi_len {
-                        pi.push_back(rest[i]);
-                        i += 1;
-                    }
-                    return Ok(pi);
+                    return Ok(proof_blob.slice(4..(4 + pi_len)));
                 }
             }
         }

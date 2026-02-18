@@ -61,6 +61,43 @@ const NETWORK = 'testnet';
 const RPC_URL = 'https://soroban-testnet.stellar.org';
 const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
 const EXISTING_GAME_HUB_TESTNET_CONTRACT_ID = 'CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG';
+const ULTRAHONK_VERIFIER_KEY = "ultrahonk-verifier";
+const ULTRAHONK_VERIFIER_MANIFEST_PATH =
+  "zk/ultrahonk_soroban_contract/contracts/ultrahonk-soroban-contract/Cargo.toml";
+const ULTRAHONK_VERIFIER_WASM_CANDIDATES = [
+  "zk/ultrahonk_soroban_contract/target/wasm32v1-none/release/ultrahonk_soroban_contract.wasm",
+  "zk/ultrahonk_soroban_contract/contracts/guess-the-puzzle/ultrahonk_soroban_contract.wasm",
+];
+const ULTRAHONK_VK_JSON_CANDIDATES = [
+  "zk/ultrahonk_soroban_contract/public/circuits/sudoku_vk.json",
+  "zk/ultrahonk_soroban_contract/circuits/target/vk_fields.json",
+];
+
+function findUltraHonkVerifierWasmPath(): string | null {
+  for (const candidate of ULTRAHONK_VERIFIER_WASM_CANDIDATES) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+async function inspectWasmProtocolVersion(wasmPath: string): Promise<number | null> {
+  try {
+    const out = await $`stellar contract inspect --wasm ${wasmPath}`.text();
+    const m = out.match(/Protocol Version:\s*(\d+)/);
+    if (!m) return null;
+    return Number.parseInt(m[1], 10);
+  } catch {
+    return null;
+  }
+}
+
+function findUltraHonkVkJsonPath(explicitPath: string): string | null {
+  if (explicitPath && existsSync(explicitPath)) return explicitPath;
+  for (const candidate of ULTRAHONK_VK_JSON_CANDIDATES) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
 
 async function testnetAccountExists(address: string): Promise<boolean> {
   const res = await fetch(`https://horizon-testnet.stellar.org/accounts/${address}`, { method: 'GET' });
@@ -96,6 +133,15 @@ async function testnetContractExists(contractId: string): Promise<boolean> {
     } catch {
       // Ignore missing temp file
     }
+  }
+}
+
+async function wasmHasFunction(wasmPath: string, functionName: string): Promise<boolean> {
+  try {
+    const out = await $`stellar contract inspect --wasm ${wasmPath}`.text();
+    return out.includes(`Function: ${functionName}`);
+  } catch {
+    return false;
   }
 }
 
@@ -189,6 +235,10 @@ for (const contract of allContracts) {
   if (existingContractIds[contract.packageName]) continue;
   const envId = getEnvValue(existingEnv, `VITE_${contract.envKey}_CONTRACT_ID`);
   if (envId) existingContractIds[contract.packageName] = envId;
+}
+if (!existingContractIds[ULTRAHONK_VERIFIER_KEY]) {
+  const verifierEnvId = getEnvValue(existingEnv, "VITE_ULTRAHONK_VERIFIER_CONTRACT_ID");
+  if (verifierEnvId) existingContractIds[ULTRAHONK_VERIFIER_KEY] = verifierEnvId;
 }
 
 // Handle admin identity (needs to be in Stellar CLI for deployment)
@@ -288,11 +338,135 @@ if (shouldEnsureMock) {
   }
 }
 
+const deploysMyGame = contracts.some((c) => c.packageName === "my-game");
+let ultrahonkVerifierId = existingContractIds[ULTRAHONK_VERIFIER_KEY] || "";
+let ultrahonkVkHash = existingDeployment?.ultrahonkVkHash || "";
+if (deploysMyGame) {
+  const candidateVerifierIds = [
+    getEnvValue(existingEnv, "ULTRAHONK_VERIFIER_CONTRACT_ID"),
+    getEnvValue(existingEnv, "VITE_ULTRAHONK_VERIFIER_CONTRACT_ID"),
+    existingContractIds[ULTRAHONK_VERIFIER_KEY],
+    existingDeployment?.ultrahonkVerifierId,
+  ].filter(Boolean) as string[];
+
+  for (const candidate of candidateVerifierIds) {
+    if (await testnetContractExists(candidate)) {
+      ultrahonkVerifierId = candidate;
+      break;
+    }
+  }
+
+  if (ultrahonkVerifierId) {
+    deployed[ULTRAHONK_VERIFIER_KEY] = ultrahonkVerifierId;
+    console.log(`✅ Using existing ${ULTRAHONK_VERIFIER_KEY} on testnet: ${ultrahonkVerifierId}\n`);
+  } else {
+    let verifierWasmPath = findUltraHonkVerifierWasmPath();
+    let verifierWasmProtocol = verifierWasmPath
+      ? await inspectWasmProtocolVersion(verifierWasmPath)
+      : null;
+    const needsVerifierBuild =
+      !verifierWasmPath || (verifierWasmProtocol !== null && verifierWasmProtocol < 25);
+
+    if (needsVerifierBuild) {
+      console.log("Building protocol-25 UltraHonk verifier WASM...");
+      try {
+        await $`stellar contract build --manifest-path ${ULTRAHONK_VERIFIER_MANIFEST_PATH}`.quiet();
+      } catch (error) {
+        console.error("❌ Failed to build UltraHonk verifier contract:", error);
+        process.exit(1);
+      }
+      verifierWasmPath = findUltraHonkVerifierWasmPath();
+      verifierWasmProtocol = verifierWasmPath
+        ? await inspectWasmProtocolVersion(verifierWasmPath)
+        : null;
+    }
+
+    if (!verifierWasmPath) {
+      console.error("❌ Error: UltraHonk verifier WASM not found.");
+      console.error("Looked in:");
+      for (const p of ULTRAHONK_VERIFIER_WASM_CANDIDATES) console.error(`  - ${p}`);
+      console.error("\nAlternatively set ULTRAHONK_VERIFIER_CONTRACT_ID in .env to reuse an existing deployed verifier.");
+      process.exit(1);
+    }
+    if (verifierWasmProtocol !== null && verifierWasmProtocol < 25) {
+      console.error(`❌ Error: Selected verifier WASM is built for protocol ${verifierWasmProtocol}, which is too old for current testnet.`);
+      console.error(`  WASM: ${verifierWasmPath}`);
+      console.error("Expected protocol 25+ after auto-build but got older output.");
+      process.exit(1);
+    }
+
+    console.log(`Deploying ${ULTRAHONK_VERIFIER_KEY}...`);
+    try {
+      const result =
+        await $`stellar contract deploy --wasm ${verifierWasmPath} --source-account ${adminSecret} --network ${NETWORK}`.text();
+      ultrahonkVerifierId = result.trim();
+      deployed[ULTRAHONK_VERIFIER_KEY] = ultrahonkVerifierId;
+      console.log(`✅ ${ULTRAHONK_VERIFIER_KEY} deployed: ${ultrahonkVerifierId}\n`);
+    } catch (error) {
+      console.error(`❌ Failed to deploy ${ULTRAHONK_VERIFIER_KEY}:`, error);
+      process.exit(1);
+    }
+  }
+
+  const vkPathFromEnv = getEnvValue(existingEnv, "ULTRAHONK_VK_JSON_PATH");
+  const vkJsonPath = findUltraHonkVkJsonPath(vkPathFromEnv);
+  if (!vkJsonPath) {
+    console.error("❌ Error: UltraHonk VK JSON not found.");
+    if (vkPathFromEnv) console.error(`  - ULTRAHONK_VK_JSON_PATH=${vkPathFromEnv} (missing)`);
+    console.error("Looked in:");
+    for (const p of ULTRAHONK_VK_JSON_CANDIDATES) console.error(`  - ${p}`);
+    console.error("\nSet ULTRAHONK_VK_JSON_PATH in .env if your VK is elsewhere.");
+    process.exit(1);
+  }
+
+  let vkJsonRaw = "";
+  try {
+    vkJsonRaw = await Bun.file(vkJsonPath).text();
+  } catch (error) {
+    console.error(`❌ Failed reading VK JSON file at ${vkJsonPath}:`, error);
+    process.exit(1);
+  }
+
+  let vkJsonMinified = vkJsonRaw.trim();
+  try {
+    vkJsonMinified = JSON.stringify(JSON.parse(vkJsonRaw));
+  } catch {
+    // Keep raw contents if not strict JSON parseable; verifier will validate format.
+  }
+
+  if (!vkJsonMinified) {
+    console.error(`❌ VK JSON file is empty: ${vkJsonPath}`);
+    process.exit(1);
+  }
+  // Soroban implicit CLI parses JSON-like tokens. Our VK payload begins with `[` so
+  // we must force it to be interpreted as a string literal.
+  const vkJsonCliString = JSON.stringify(vkJsonMinified);
+
+  console.log(`Setting verifier VK from: ${vkJsonPath}`);
+  try {
+    const setVkResult =
+      await $`stellar contract invoke --id ${ultrahonkVerifierId} --source-account ${adminSecret} --network ${NETWORK} -- set_vk --vk-json ${vkJsonCliString}`.text();
+    ultrahonkVkHash = setVkResult.trim();
+    console.log(`✅ Verifier VK set (hash: ${ultrahonkVkHash})\n`);
+  } catch (error) {
+    console.error(`❌ Failed to set VK on ${ULTRAHONK_VERIFIER_KEY}:`, error);
+    process.exit(1);
+  }
+}
+
 for (const contract of contracts) {
   if (contract.isMockHub) continue;
 
   console.log(`Deploying ${contract.packageName}...`);
   try {
+    if (contract.packageName === "my-game") {
+      const hasSetVerifier = await wasmHasFunction(contract.wasmPath, "set_verifier");
+      if (!hasSetVerifier) {
+        console.warn("⚠️  Local my-game WASM does not include set_verifier. Rebuilding my-game...");
+        await $`stellar contract build --manifest-path ${contract.manifestPath}`.quiet();
+      }
+    }
+
     console.log("  Installing WASM...");
     const installResult =
       await $`stellar contract install --wasm ${contract.wasmPath} --source-account ${adminSecret} --network ${NETWORK}`.text();
@@ -304,6 +478,15 @@ for (const contract of contracts) {
       await $`stellar contract deploy --wasm-hash ${wasmHash} --source-account ${adminSecret} --network ${NETWORK} -- --admin ${adminAddress} --game-hub ${mockGameHubId}`.text();
     const contractId = deployResult.trim();
     deployed[contract.packageName] = contractId;
+    if (contract.packageName === "my-game") {
+      if (!ultrahonkVerifierId) {
+        console.error("❌ my-game requires a verifier contract, but none is configured.");
+        process.exit(1);
+      }
+      console.log(`  Configuring verifier: ${ultrahonkVerifierId}`);
+      await $`stellar contract invoke --id ${contractId} --source-account ${adminSecret} --network ${NETWORK} -- set_verifier --verifier ${ultrahonkVerifierId}`.quiet();
+      console.log("  ✅ Verifier configured");
+    }
     console.log(`✅ ${contract.packageName} deployed: ${contractId}\n`);
   } catch (error) {
     console.error(`❌ Failed to deploy ${contract.packageName}:`, error);
@@ -321,6 +504,9 @@ for (const contract of allContracts) {
   const id = deployed[contract.packageName];
   if (id) console.log(`  ${contract.packageName}: ${id}`);
 }
+if (deploysMyGame && ultrahonkVerifierId) {
+  console.log(`  ${ULTRAHONK_VERIFIER_KEY}: ${ultrahonkVerifierId}`);
+}
 
 const twentyOneId = deployed["twenty-one"] || "";
 const numberGuessId = deployed["number-guess"] || "";
@@ -334,6 +520,8 @@ const deploymentInfo = {
   mockGameHubId,
   twentyOneId,
   numberGuessId,
+  ultrahonkVerifierId,
+  ultrahonkVkHash,
   contracts: deploymentContracts,
   network: NETWORK,
   rpcUrl: RPC_URL,
@@ -360,6 +548,7 @@ const envContent = `# Auto-generated by deploy script
 VITE_SOROBAN_RPC_URL=${RPC_URL}
 VITE_NETWORK_PASSPHRASE=${NETWORK_PASSPHRASE}
 ${contractEnvLines}
+VITE_ULTRAHONK_VERIFIER_CONTRACT_ID=${ultrahonkVerifierId}
 
 # Dev wallet addresses for testing
 VITE_DEV_ADMIN_ADDRESS=${walletAddresses.admin}
