@@ -1,0 +1,3 @@
+[submodule "zk/ultrahonk_soroban_contract"]
+	path = zk/ultrahonk_soroban_contract
+	url = https://github.com/tupui/ultrahonk_soroban_contract.git
