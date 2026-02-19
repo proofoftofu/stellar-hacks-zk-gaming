@@ -625,9 +625,22 @@ export function MyGameGame({
           ? 'You'
           : 'Unknown'
     : null;
+  const isPlayer1 = !!game && userAddress === game.player1;
+  const isPlayer2 = !!game && userAddress === game.player2;
   const canCommit = !!game && !game.ended && userAddress === game.player1 && !game.commitment;
   const canGuess = !!game && !game.ended && userAddress === game.player2 && !!game.commitment && game.pending_guess_id === null;
   const canFeedback = !!game && !game.ended && userAddress === game.player1 && game.pending_guess_id !== null;
+  const pendingGuessDisplay = (() => {
+    if (!game || game.pending_guess_id === null || game.pending_guess_id === undefined) return '';
+    const rec = game.guesses.find((g) => Number(g.guess_id) === Number(game.pending_guess_id));
+    if (!rec) return '';
+    try {
+      const g = parseGuessBuffer(Buffer.from(rec.guess));
+      return `${g[0]},${g[1]},${g[2]},${g[3]}`;
+    } catch {
+      return '';
+    }
+  })();
   const statusHint = game
     ? game.ended
       ? 'Game finished.'
@@ -637,7 +650,7 @@ export function MyGameGame({
           : 'Waiting for Player1 to submit secret commitment.'
       : game.pending_guess_id !== undefined && game.pending_guess_id !== null
         ? userAddress === game.player1
-          ? 'Player2 submitted a guess. Submit feedback proof now.'
+          ? `Player2 submitted a guess${pendingGuessDisplay ? ` (${pendingGuessDisplay})` : ''}. Submit feedback proof now.`
           : 'Guess submitted. Waiting for Player1 feedback proof.'
         : userAddress === game.player2
           ? 'Your turn: submit next guess.'
@@ -890,16 +903,32 @@ export function MyGameGame({
 
               <div style={{ display: 'grid', gap: '0.5rem' }}>
                 <label>Session ID</label>
-                <input value={String(sessionId)} onChange={(e) => setSessionId(Number(e.target.value) || 0)} />
+                <input value={String(sessionId)} readOnly />
 
-                <label>Player1 Secret Digits (unique 1,2,3,4)</label>
-                <input value={secretInput} onChange={(e) => setSecretInput(e.target.value)} />
+                {isPlayer1 && (
+                  <>
+                    <label>Player1 Secret Digits (unique 1,2,3,4)</label>
+                    <input
+                      value={secretInput}
+                      onChange={(e) => setSecretInput(e.target.value)}
+                      disabled={!!game?.commitment}
+                    />
 
-                <label>Salt 16 Bytes (0-255, csv)</label>
-                <input value={saltInput} onChange={(e) => setSaltInput(e.target.value)} />
+                    <label>Salt 16 Bytes (0-255, csv)</label>
+                    <input
+                      value={saltInput}
+                      onChange={(e) => setSaltInput(e.target.value)}
+                      disabled={!!game?.commitment}
+                    />
+                  </>
+                )}
 
-                <label>Player2 Guess Digits (unique 1,2,3,4)</label>
-                <input value={guessInput} onChange={(e) => setGuessInput(e.target.value)} />
+                {isPlayer2 && (
+                  <>
+                    <label>Player2 Guess Digits (unique 1,2,3,4)</label>
+                    <input value={guessInput} onChange={(e) => setGuessInput(e.target.value)} />
+                  </>
+                )}
               </div>
 
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }}>
