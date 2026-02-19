@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:proof": "bun run src/scripts/test-proof.ts"
+    "test:proof": "bun run src/scripts/test-proof.ts",
+    "test:proof:valid": "bun run src/scripts/test-proof.ts --valid"
   },
   "dependencies": {
     "@creit-tech/stellar-wallets-kit": "npm:@jsr/creit-tech__stellar-wallets-kit@2.0.0-beta.5",

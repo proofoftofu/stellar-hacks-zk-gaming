@@ -125,6 +125,74 @@ function buildSyntheticProofBlob(publicInputs: Buffer): Buffer {
   return Buffer.concat([header, publicInputs, proof]);
 }
 
+function parseU32FromField(field: Buffer): number {
+  if (field.length !== 32) throw new Error(`Expected 32-byte field, got ${field.length}`);
+  return (
+    ((field[28] ?? 0) << 24) |
+    ((field[29] ?? 0) << 16) |
+    ((field[30] ?? 0) << 8) |
+    (field[31] ?? 0)
+  ) >>> 0;
+}
+
+function readBinaryFileFromCandidates(candidates: string[]): Buffer {
+  for (const p of candidates) {
+    try {
+      return Buffer.from(readFileSync(p));
+    } catch {
+      // Try next path.
+    }
+  }
+  throw new Error(`File not found in any candidate path: ${candidates.join(', ')}`);
+}
+
+type ParsedPublicInputs = {
+  sessionId: number;
+  guessId: number;
+  commitment: Buffer;
+  guess: Buffer;
+  exact: number;
+  partial: number;
+};
+
+function parsePublicInputs(publicInputs: Buffer): ParsedPublicInputs {
+  if (publicInputs.length % 32 !== 0) {
+    throw new Error(`public_inputs length must be multiple of 32, got ${publicInputs.length}`);
+  }
+  if (publicInputs.length < 32 * 6) {
+    throw new Error(`public_inputs too short, expected at least 192 bytes, got ${publicInputs.length}`);
+  }
+
+  const field0 = publicInputs.subarray(0, 32);
+  const field1 = publicInputs.subarray(32, 64);
+  const field2 = publicInputs.subarray(64, 96);
+  const field3 = publicInputs.subarray(96, 128);
+  const field4 = publicInputs.subarray(128, 160);
+  const field5 = publicInputs.subarray(160, 192);
+
+  const sessionId = parseU32FromField(field0);
+  const guessId = parseU32FromField(field1);
+  const commitment = Buffer.from(field2);
+  const guess = Buffer.from(field3.subarray(28, 32));
+  const exact = parseU32FromField(field4);
+  const partial = parseU32FromField(field5);
+
+  return { sessionId, guessId, commitment, guess, exact, partial };
+}
+
+function buildProofBlobFromBb(publicInputs: Buffer, proof: Buffer): Buffer {
+  if (publicInputs.length % 32 !== 0) {
+    throw new Error(`public_inputs length must be multiple of 32, got ${publicInputs.length}`);
+  }
+  if (proof.length % 32 !== 0) {
+    throw new Error(`proof length must be multiple of 32, got ${proof.length}`);
+  }
+  const totalFields = (publicInputs.length + proof.length) / 32;
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(totalFields, 0);
+  return Buffer.concat([header, publicInputs, proof]);
+}
+
 function classifyFailure(error: unknown): string {
   const text = String(error);
   if (text.includes('InvalidProof') || text.includes('Contract, #11')) return 'InvalidProof';
@@ -177,13 +245,42 @@ async function run() {
     ...signerFor(p2, keyByAddress),
   });
 
-  const sessionId = Number(process.argv[2] || (Date.now() % 1_000_000_000));
+  const mode = process.argv.includes('--valid') ? 'valid' : 'smoke';
+  let sessionId = Number(process.argv[2] || (Date.now() % 1_000_000_000));
   const stake = 100_0000000n;
-  const commitment = Buffer.alloc(32, 7);
-  const guess = Buffer.from([1, 2, 3, 4]);
-  const exact = 1;
-  const partial = 1;
+  let commitment = Buffer.alloc(32, 7);
+  let guess = Buffer.from([1, 2, 3, 4]);
+  let exact = 1;
+  let partial = 1;
+  let expectedGuessId = 0;
+  let validProofBlob: Buffer | null = null;
 
+  if (mode === 'valid') {
+    const proofPathCandidates = [
+      resolve(process.cwd(), 'zk/my-game-circuit/target/proof'),
+      resolve(process.cwd(), '../zk/my-game-circuit/target/proof'),
+      resolve(process.cwd(), '../../zk/my-game-circuit/target/proof'),
+    ];
+    const publicInputsPathCandidates = [
+      resolve(process.cwd(), 'zk/my-game-circuit/target/public_inputs'),
+      resolve(process.cwd(), '../zk/my-game-circuit/target/public_inputs'),
+      resolve(process.cwd(), '../../zk/my-game-circuit/target/public_inputs'),
+    ];
+
+    const proofBytes = readBinaryFileFromCandidates(proofPathCandidates);
+    const publicInputsBytes = readBinaryFileFromCandidates(publicInputsPathCandidates);
+    const parsed = parsePublicInputs(publicInputsBytes);
+
+    sessionId = parsed.sessionId;
+    expectedGuessId = parsed.guessId;
+    commitment = parsed.commitment;
+    guess = parsed.guess;
+    exact = parsed.exact;
+    partial = parsed.partial;
+    validProofBlob = buildProofBlobFromBb(publicInputsBytes, proofBytes);
+  }
+
+  console.log(`Mode: ${mode}`);
   console.log(`Using contract: ${contractId}`);
   console.log(`Session ID: ${sessionId}`);
   const verifierTx = await player1Client.get_verifier();
@@ -237,6 +334,25 @@ async function run() {
   }
   const guessId = Number(game.pending_guess_id);
   console.log(`   guess_id=${guessId}`);
+
+  if (mode === 'valid') {
+    if (!validProofBlob) throw new Error('Internal error: validProofBlob not prepared');
+    if (guessId !== expectedGuessId) {
+      throw new Error(`guess_id mismatch: on-chain ${guessId}, proof expects ${expectedGuessId}`);
+    }
+
+    console.log('4) submit_feedback_proof with real proof blob');
+    const validTx = await player1Client.submit_feedback_proof({
+      session_id: sessionId,
+      guess_id: guessId,
+      exact,
+      partial,
+      proof_blob: validProofBlob,
+    });
+    await validTx.signAndSend();
+    console.log('✅ Valid proof accepted by my-game contract.');
+    return;
+  }
 
   console.log('4) submit_feedback_proof with synthetic proof blob');
   const publicInputs = buildPublicInputs(sessionId, guessId, commitment, guess, exact, partial);

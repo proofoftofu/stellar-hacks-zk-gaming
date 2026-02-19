@@ -428,7 +428,7 @@ impl MyGameContract {
         }
 
         let rest_len = total_len - 4;
-        for proof_fields in [456u32, 440u32] {
+        for proof_fields in [456u32, 440u32, 234u32] {
             let proof_len = proof_fields * 32;
             if rest_len >= proof_len {
                 let pi_len = rest_len - proof_len;

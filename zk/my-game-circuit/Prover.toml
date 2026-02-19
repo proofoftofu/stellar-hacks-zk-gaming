@@ -1,0 +1,11 @@
+# Public inputs (must match contract-side values used when submitting proof)
+session_id = "454271938"
+guess_id = "0"
+commitment = "16909060"
+guess_packed = "16909060"
+exact = "4"
+partial = "0"
+
+# Private witness
+secret = ["1", "2", "3", "4"]
+guess = ["1", "2", "3", "4"]
