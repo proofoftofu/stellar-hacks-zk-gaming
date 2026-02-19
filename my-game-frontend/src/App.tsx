@@ -20,7 +20,7 @@ export default function App() {
         <div className="card">
           <h3 className="gradient-text">Contract Not Configured</h3>
           <p style={{ color: 'var(--color-ink-muted)', marginTop: '1rem' }}>
-            Run <code>bun run setup</code> to deploy and configure testnet contract IDs, or set
+            Run <code>bun run setup:local</code> to deploy and configure localnet contract IDs, or set
             <code>VITE_MY_GAME_CONTRACT_ID</code> in the root <code>.env</code>.
           </p>
         </div>
@@ -28,7 +28,7 @@ export default function App() {
         <div className="card">
           <h3 className="gradient-text">Dev Wallets Missing</h3>
           <p style={{ color: 'var(--color-ink-muted)', marginTop: '0.75rem' }}>
-            Run <code>bun run setup</code> to generate dev wallets for Player 1 and Player 2.
+            Run <code>bun run setup:local</code> to generate dev wallets for Player 1 and Player 2.
           </p>
         </div>
       ) : !isConnected ? (

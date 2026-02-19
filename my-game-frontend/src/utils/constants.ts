@@ -8,13 +8,17 @@ import { getRuntimeConfig } from './runtimeConfig';
 const runtimeConfig = getRuntimeConfig();
 
 export const SOROBAN_RPC_URL =
-  runtimeConfig?.rpcUrl || import.meta.env.VITE_SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
+  runtimeConfig?.rpcUrl || import.meta.env.VITE_SOROBAN_RPC_URL || 'http://localhost:8000/soroban/rpc';
 export const RPC_URL = SOROBAN_RPC_URL; // Alias for compatibility
 export const NETWORK_PASSPHRASE =
   runtimeConfig?.networkPassphrase ||
   import.meta.env.VITE_NETWORK_PASSPHRASE ||
-  'Test SDF Network ; September 2015';
-export const NETWORK = SOROBAN_RPC_URL.includes('testnet') ? 'testnet' : 'mainnet';
+  'Standalone Network ; February 2017';
+export const NETWORK = SOROBAN_RPC_URL.includes('localhost')
+  ? 'local'
+  : SOROBAN_RPC_URL.includes('testnet')
+    ? 'testnet'
+    : 'mainnet';
 
 function contractEnvKey(crateName: string): string {
   // Crate name -> env key matches scripts/utils/contracts.ts: hyphens become underscores.

@@ -14,6 +14,7 @@
     "publish": "bun run scripts/publish.ts",
     "dev": "bun --cwd=sgs_frontend run dev",
     "dev:game": "bun run scripts/dev-game.ts",
+    "zk:server": "bun --cwd=my-game-frontend run zk:server",
     "test:proof:valid": "bun --cwd=my-game-frontend run test:proof:valid",
     "test:integrate": "bun --cwd=my-game-frontend run test:integrate"
   },
