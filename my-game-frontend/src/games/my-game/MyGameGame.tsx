@@ -4,7 +4,12 @@ import { Keypair, TransactionBuilder, hash } from '@stellar/stellar-sdk';
 import { Client as MyGameClient, type Game } from '../../../../bindings/my_game/src/index';
 import { MyGameService } from './myGameService';
 import { useWallet } from '@/hooks/useWallet';
-import { RPC_URL, NETWORK_PASSPHRASE, MY_GAME_CONTRACT } from '@/utils/constants';
+import {
+  RPC_URL,
+  NETWORK_PASSPHRASE,
+  MY_GAME_CONTRACT,
+} from '@/utils/constants';
+import { getFundedSimulationSourceAddress } from '@/utils/simulationUtils';
 
 interface MyGameGameProps {
   userAddress: string;
@@ -177,6 +182,12 @@ export function MyGameGame({
   const [preparedAuthCode, setPreparedAuthCode] = useState('');
   const [importAuthCode, setImportAuthCode] = useState('');
   const [loadSessionInput, setLoadSessionInput] = useState('');
+  const [parsedAuthInfo, setParsedAuthInfo] = useState<{
+    sessionId: number;
+    player1: string;
+    player1Points: string;
+  } | null>(null);
+  const [authParseError, setAuthParseError] = useState('');
 
   const [game, setGame] = useState<Game | null>(null);
   const [loading, setLoading] = useState(false);
@@ -188,7 +199,6 @@ export function MyGameGame({
 
   const player1Secret = import.meta.env.VITE_DEV_PLAYER1_SECRET || '';
   const player2Secret = import.meta.env.VITE_DEV_PLAYER2_SECRET || '';
-  const placeholderP2 = import.meta.env.VITE_DEV_PLAYER2_ADDRESS || '';
   const allowHttp = RPC_URL.startsWith('http://');
 
   const keypairs = useMemo(() => {
@@ -233,6 +243,26 @@ export function MyGameGame({
       setLoadSessionInput(sid);
     }
   }, [initialXDR, initialSessionId]);
+
+  useEffect(() => {
+    if (!importAuthCode.trim()) {
+      setParsedAuthInfo(null);
+      setAuthParseError('');
+      return;
+    }
+    try {
+      const parsed = myGameService.parseAuthEntry(importAuthCode.trim());
+      setParsedAuthInfo({
+        sessionId: parsed.sessionId,
+        player1: parsed.player1,
+        player1Points: parsed.player1Points.toString(),
+      });
+      setAuthParseError('');
+    } catch (e) {
+      setParsedAuthInfo(null);
+      setAuthParseError(String(e));
+    }
+  }, [importAuthCode, myGameService]);
 
   const createClient = (publicKey: string) => {
     const kp = keypairs[publicKey];
@@ -355,10 +385,11 @@ export function MyGameGame({
   }, [phase, userAddress, loadSessionInput, sessionId]);
 
   const handlePrepareAuthCode = () => run(async () => {
-    console.log('[my-game-ui] prepare auth code', { sessionId, userAddress, placeholderP2 });
+    console.log('[my-game-ui] prepare auth code', { sessionId, userAddress });
     if (!userAddress) throw new Error('Connect wallet first');
-    if (!placeholderP2) throw new Error('Missing VITE_DEV_PLAYER2_ADDRESS for placeholder source');
-    if (userAddress === placeholderP2) throw new Error('Switch to Player1 account before preparing auth code');
+
+    const placeholderP2 = await getFundedSimulationSourceAddress([userAddress]);
+    console.log('[my-game-ui] selected placeholder source for prepareStartGame', placeholderP2);
 
     const stake = 100_0000000n;
     const signer = getContractSigner();
@@ -777,12 +808,22 @@ export function MyGameGame({
                       className="w-full px-4 py-3 rounded-xl bg-white border-2 border-blue-200 focus:outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100 text-xs font-mono resize-none"
                     />
                   </div>
+                  {parsedAuthInfo && (
+                    <div className="p-3 rounded-xl bg-white border-2 border-blue-200 text-xs">
+                      <p><span className="font-bold">Player1 (fixed):</span> <span className="font-mono">{parsedAuthInfo.player1}</span></p>
+                      <p><span className="font-bold">Session:</span> <span className="font-mono">{parsedAuthInfo.sessionId}</span></p>
+                      <p><span className="font-bold">Player1 points:</span> <span className="font-mono">{parsedAuthInfo.player1Points}</span></p>
+                    </div>
+                  )}
+                  {authParseError && (
+                    <p className="text-xs text-red-600 font-semibold">{authParseError}</p>
+                  )}
                 </div>
               </div>
 
               <button
                 onClick={handleImportAndStart}
-                disabled={loading || quickstartLoading || !importAuthCode.trim()}
+                disabled={loading || quickstartLoading || !importAuthCode.trim() || !!authParseError}
                 className="w-full py-4 rounded-xl font-bold text-white text-lg bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-500 hover:from-blue-600 hover:via-cyan-600 hover:to-teal-600 disabled:from-gray-200 disabled:to-gray-300 disabled:text-gray-500 transition-all shadow-xl hover:shadow-2xl transform hover:scale-105 disabled:transform-none"
               >
                 {loading ? 'Importing & Signing...' : 'Import & Sign Auth Entry'}
