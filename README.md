@@ -2,21 +2,21 @@
 
 ZK Mastermind is a zk-based on-chain Mastermind game built from Stellar Game Studio and run on Stellar localnet.
 
-- `player1` sets a secret 4-color code (any order).
-- `player2` tries to guess the code within 12 attempts.
-- ZK proof verifies that `player1`'s feedback (`exact` and `partial`) is correct.
+- `Codemaker` sets a secret 4-color code (any order).
+- `Codebreaker` tries to guess the code within 12 attempts.
+- ZK proof verifies that `Codemaker`'s feedback (`exact` and `partial`) is correct.
 - Feedback is verified without revealing the secret answer.
 - Current rule: 4 digits in `1..6`, duplicates allowed.
 - Search space with duplicates allowed: `6^4 = 1296`.
 
 ### How It Works
-- `player1` commits a **salted hash commitment** of the secret code on-chain.
-- `player2` submits guesses on-chain.
-- `player1` computes feedback `(exact, partial)` off-chain and generates a ZK proof.
+- `Codemaker` commits a **salted hash commitment** of the secret code on-chain.
+- `Codebreaker` submits guesses on-chain.
+- `Codemaker` computes feedback `(exact, partial)` off-chain and generates a ZK proof.
 - Contract verifies:
   - public inputs match on-chain state (`session_id`, `guess_id`, `commitment`, `guess`, `exact`, `partial`)
   - proof is valid against stored VK
-- If `exact == 4`, `player2` wins; otherwise after 12 attempts, `player1` wins.
+- If `exact == 4`, `Codebreaker` wins; otherwise after 12 attempts, `Codemaker` wins.
 
 Notes:
 - The secret is not revealed; only feedback is public.
@@ -68,25 +68,38 @@ Then deploy/configure local network:
 bun run setup:local
 ```
 
-### Runtime Test Commands
+### Test Commands
 From repo root:
-```bash
-bun run test:proof:valid
-```
-- Runs one valid runtime proof flow (`nargo execute` + `bb prove` inside script).
-
 ```bash
 bun run test:integrate
 ```
 - Runs full scenarios:
-  - solve path: `player2` wins
-  - fail path: 12 misses -> `player1` wins
+  - solve path: `Codebreaker` wins
+  - fail path: 12 misses -> `Codemaker` wins
   - security checks (invalid / tampered submissions rejected)
 
-### Quick Dev Flow
+### Run Frontend + ZK Server (Local)
 From repo root:
+
+1) Resolve binary paths and export for zk-server:
 ```bash
-bun run setup:local
-bun run test:proof:valid
-bun run test:integrate
+which nargo
+which bb
+
+export NARGO_BIN="$(which nargo)"
+export BB_BIN="$(which bb)"
 ```
+
+2) Start zk proof server (terminal A):
+```bash
+bun run zk:server
+```
+
+3) Start game frontend (terminal B):
+```bash
+bun run dev:game my-game
+```
+
+Notes:
+- `zk-server` defaults to `http://localhost:8787`
+- frontend uses `VITE_ZK_SERVER_URL` if set, otherwise it also defaults to `http://localhost:8787`

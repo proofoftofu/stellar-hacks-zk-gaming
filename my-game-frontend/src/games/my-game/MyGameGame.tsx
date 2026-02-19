@@ -126,6 +126,19 @@ function setGuessDigitAt(current: Guess4, index: number, value: number): Guess4 
   return next;
 }
 
+function logTxCreated(label: string, tx: unknown) {
+  const anyTx = tx as { needsNonInvokerSigningBy?: () => string[]; simulationData?: unknown; toJSON?: () => unknown };
+  try {
+    const needs = typeof anyTx?.needsNonInvokerSigningBy === 'function' ? anyTx.needsNonInvokerSigningBy() : [];
+    console.log(`[my-game-ui][tx] created ${label}`, {
+      hasSimulationData: !!anyTx?.simulationData,
+      needsNonInvokerSigningBy: needs,
+    });
+  } catch {
+    console.log(`[my-game-ui][tx] created ${label}`);
+  }
+}
+
 function signerFor(source: Keypair, all: Record<string, Keypair>) {
   return {
     signTransaction: async (txXdr: string, opts?: { networkPassphrase?: string }) => {
@@ -338,6 +351,7 @@ export function MyGameGame({
     console.log('[my-game-ui] loadGame', { sessionId: target });
     const reader = createClient(userAddress);
     const tx = await reader.get_game({ session_id: target });
+    logTxCreated(`get_game(session_id=${target})`, tx);
     const sim = await tx.simulate();
     if (!sim.result.isOk()) {
       throw new Error(`Game not found for session_id=${target}`);
@@ -357,6 +371,7 @@ export function MyGameGame({
   const fetchLatestGame = async (): Promise<Game> => {
     const reader = createClient(userAddress);
     const tx = await reader.get_game({ session_id: sessionId });
+    logTxCreated(`get_game(session_id=${sessionId})`, tx);
     const sim = await tx.simulate();
     if (!sim.result.isOk()) {
       throw new Error(`Game not found for session_id=${sessionId}`);
@@ -377,6 +392,7 @@ export function MyGameGame({
           if (!Number.isInteger(sid) || sid <= 0) return;
           const reader = createClient(userAddress);
           const tx = await reader.get_game({ session_id: sid });
+          logTxCreated(`poll/get_game(session_id=${sid})`, tx);
           const sim = await tx.simulate();
           if (sim.result.isOk()) {
             const g = sim.result.unwrap();
@@ -490,6 +506,7 @@ export function MyGameGame({
         player1_points: stake,
         player2_points: stake,
       });
+      logTxCreated(`start_game(session_id=${sid})`, tx);
 
       const needed = tx.needsNonInvokerSigningBy();
       console.log('[my-game-ui] quickstart needed signatures', needed);
@@ -507,6 +524,7 @@ export function MyGameGame({
       }
 
       await tx.signAndSend();
+      console.log('[my-game-ui][tx] sent start_game', { sessionId: sid });
       await loadGame(sid);
       setMessage(`Quickstart ready (session ${sid})`);
       console.log('[my-game-ui] quickstart completed', sid);
@@ -537,10 +555,13 @@ export function MyGameGame({
     localStorage.setItem(SECRET_STATE_KEY, JSON.stringify(snapshot));
 
     const client = createClient(game.player1);
-    await (await client.commit_code({
+    const tx = await client.commit_code({
       session_id: sessionId,
       commitment: commitmentFieldBytes(commitment),
-    })).signAndSend();
+    });
+    logTxCreated(`commit_code(session_id=${sessionId})`, tx);
+    await tx.signAndSend();
+    console.log('[my-game-ui][tx] sent commit_code', { sessionId });
 
     await loadGame(sessionId);
     setSecretRecoveryError('');
@@ -556,10 +577,13 @@ export function MyGameGame({
 
     const guess = guessDigits;
     const client = createClient(game.player2);
-    await (await client.submit_guess({
+    const tx = await client.submit_guess({
       session_id: sessionId,
       guess: Buffer.from(guess),
-    })).signAndSend();
+    });
+    logTxCreated(`submit_guess(session_id=${sessionId})`, tx);
+    await tx.signAndSend();
+    console.log('[my-game-ui][tx] sent submit_guess', { sessionId, guess });
 
     await loadGame(sessionId);
     setMessage('Guess submitted');
@@ -596,13 +620,21 @@ export function MyGameGame({
     });
 
     const client = createClient(latestGame.player1);
-    await (await client.submit_feedback_proof({
+    const tx = await client.submit_feedback_proof({
       session_id: sessionId,
       guess_id: pendingGuessId,
       exact: fb.exact,
       partial: fb.partial,
       proof_blob: proofBlob,
-    })).signAndSend();
+    });
+    logTxCreated(`submit_feedback_proof(session_id=${sessionId}, guess_id=${pendingGuessId})`, tx);
+    await tx.signAndSend();
+    console.log('[my-game-ui][tx] sent submit_feedback_proof', {
+      sessionId,
+      guessId: pendingGuessId,
+      exact: fb.exact,
+      partial: fb.partial,
+    });
 
     await loadGame(sessionId);
     setMessage(`Feedback proof submitted (exact=${fb.exact}, partial=${fb.partial})`);
