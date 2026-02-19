@@ -106,3 +106,15 @@ bun run dev:game my-game
 Notes:
 - `zk-server` defaults to `http://localhost:8787`
 - frontend uses `VITE_ZK_SERVER_URL` if set, otherwise it also defaults to `http://localhost:8787`
+
+### Development Note
+
+Project is created with:
+https://jamesbachini.github.io/Stellar-Game-Studio/
+
+On-chain ZK verifier is forked from:
+https://github.com/tupui/ultrahonk_soroban_contract
+
+### Limitation
+
+I could not run the ZK verifier on Testnet because of budget limit issues, so the submitted project runs on local only.
