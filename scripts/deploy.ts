@@ -74,7 +74,11 @@ const ULTRAHONK_VERIFIER_WASM_CANDIDATES = [
   "zk/ultrahonk_soroban_contract/target/wasm32v1-none/release/ultrahonk_soroban_contract.wasm",
   "zk/ultrahonk_soroban_contract/contracts/guess-the-puzzle/ultrahonk_soroban_contract.wasm",
 ];
+const FORCE_REBUILD_ULTRAHONK_VERIFIER = true;
+const FORCE_REDEPLOY_ULTRAHONK_VERIFIER = true;
 const ULTRAHONK_VK_JSON_CANDIDATES = [
+  "zk/my-game-circuit/public/my-game_vk.json",
+  "zk/my-game-circuit/target/vk_fields.json",
   "zk/ultrahonk_soroban_contract/public/circuits/sudoku_vk.json",
   "zk/ultrahonk_soroban_contract/circuits/target/vk_fields.json",
 ];
@@ -416,17 +420,24 @@ if (deploysMyGame) {
         existingDeployment?.ultrahonkVerifierId,
       ].filter(Boolean) as string[];
 
-  for (const candidate of candidateVerifierIds) {
-    if (await networkContractExists(candidate)) {
-      ultrahonkVerifierId = candidate;
-      break;
+  if (!FORCE_REDEPLOY_ULTRAHONK_VERIFIER) {
+    for (const candidate of candidateVerifierIds) {
+      if (await networkContractExists(candidate)) {
+        ultrahonkVerifierId = candidate;
+        break;
+      }
     }
+  } else {
+    ultrahonkVerifierId = "";
   }
 
   if (ultrahonkVerifierId) {
     deployed[ULTRAHONK_VERIFIER_KEY] = ultrahonkVerifierId;
     console.log(`✅ Using existing ${ULTRAHONK_VERIFIER_KEY} on ${NETWORK}: ${ultrahonkVerifierId}\n`);
   } else {
+    if (FORCE_REDEPLOY_ULTRAHONK_VERIFIER) {
+      console.log(`♻️  Forcing fresh ${ULTRAHONK_VERIFIER_KEY} deployment on ${NETWORK} to avoid stale verifier code.`);
+    }
     let verifierWasmPath = findUltraHonkVerifierWasmPath();
     const verifierHasSetVkBytes =
       verifierWasmPath ? await wasmHasFunction(verifierWasmPath, "set_vk_bytes") : false;
@@ -434,6 +445,7 @@ if (deploysMyGame) {
       ? await inspectWasmProtocolVersion(verifierWasmPath)
       : null;
     const needsVerifierBuild =
+      FORCE_REBUILD_ULTRAHONK_VERIFIER ||
       !verifierWasmPath ||
       !verifierHasSetVkBytes ||
       (verifierWasmProtocol !== null && verifierWasmProtocol < 25);
@@ -508,6 +520,7 @@ if (deploysMyGame) {
 
   let vkSet = false;
 
+  // Prefer binary VK. This is the native format consumed by ultrahonk_soroban_verifier.
   if (vkBinPath) {
     let vkHex = "";
     try {

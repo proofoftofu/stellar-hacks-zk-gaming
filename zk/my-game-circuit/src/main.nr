@@ -1,6 +1,10 @@
 // my_game Noir circuit for Mastermind-like feedback checks.
 // Public inputs are ordered to match on-chain checks:
 // session_id, guess_id, commitment, guess_packed, exact, partial.
+//
+// Security note:
+// `commitment` is now a salted hash commitment, not a direct packing of `secret`.
+// This prevents recovering the answer from on-chain commitment bytes.
 
 fn main(
     session_id: pub Field,
@@ -9,6 +13,7 @@ fn main(
     guess_packed: pub Field,
     exact: pub Field,
     partial: pub Field,
+    salt: [u8; 16],
     secret: [Field; 4],
     guess: [Field; 4],
 ) {
@@ -43,13 +48,21 @@ fn main(
         guess[3];             // 256^0
     assert(guess_packed == packed_guess);
 
-    // Demo commitment binding: pack secret as a u32-like field.
-    // This must match the public `commitment` input used for proving.
-    let secret_commitment =
-        secret[0] * 16777216 +
-        secret[1] * 65536 +
-        secret[2] * 256 +
-        secret[3];
+    // One-way salted commitment over witness values:
+    // commitment = be31(blake2s(secret_bytes || salt_bytes))
+    // where be31 packs the first 31 digest bytes as a field.
+    let mut preimage: [u8; 20] = [0; 20];
+    for i in 0..4 {
+        preimage[i] = secret[i] as u8;
+    }
+    for i in 0..16 {
+        preimage[4 + i] = salt[i];
+    }
+    let digest = std::hash::blake2s(preimage);
+    let mut secret_commitment = 0;
+    for i in 0..31 {
+        secret_commitment = secret_commitment * 256 + (digest[i] as Field);
+    }
     assert(commitment == secret_commitment);
 
     // Exact matches: correct digit in correct slot.

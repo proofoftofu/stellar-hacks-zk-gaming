@@ -1,11 +1,12 @@
 # Public inputs (must match contract-side values used when submitting proof)
 session_id = "454271938"
 guess_id = "0"
-commitment = "16909060"
+commitment = "224937606397029623043161755141698519400905065769619366550608124607559508480"
 guess_packed = "16909060"
 exact = "4"
 partial = "0"
 
 # Private witness
+salt = ["11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26"]
 secret = ["1", "2", "3", "4"]
 guess = ["1", "2", "3", "4"]
