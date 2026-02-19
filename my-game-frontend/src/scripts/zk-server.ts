@@ -271,4 +271,3 @@ Bun.serve({
 });
 
 console.log(`zk_server listening on http://localhost:${port}`);
-console.log(`zk_server binaries: nargo=${detectedNargo}, bb=${detectedBb}`);

@@ -48,38 +48,26 @@ img {
 
 # Problem
 
-- In Mastermind, Codemaker knows the secret.
-- Codebreaker needs correct feedback (`exact`, `partial`) each round.
-- Without verification, Codemaker can lie.
+Mastermind is: 
+- Only Codemaker knows the secret.
+- Codebreaker can only guess it.
+- Codemaker must give feedback (`exact` / `partial`) without revealing the secret and without lying.
 
-Goal:
-- Prove feedback is correct without revealing the secret code.
-
+Challenge:
+- It is difficult to do it on-chain.
 ---
 
 # Solution
 
-- Codemaker commits a salted hash of the secret on-chain.
-- Codebreaker submits guesses on-chain.
-- Codemaker generates zk proof for feedback correctness.
-- Contract verifies:
-  - public inputs match game state
-  - proof is valid under stored VK
+Using zk for:
+- Private secret + trustless anti-lie feedback.
 
-Result:
-- Trustless feedback, secret remains hidden.
-
----
-
-# Game Rules
-
-- Secret/guess length: 4
-- Digit space: `1..6`
-- Duplicates: allowed
-- Max rounds: 12
-- Win condition:
-  - `exact == 4` => Codebreaker wins
-  - otherwise after 12 rounds => Codemaker wins
+Points:
+- Verify that `exact` / `partial` feedback is correct without revealing the answer.
+- Codemaker cannot lie about feedback.
+- Contract accepts feedback only when:
+  - proof public inputs match on-chain game state
+  - proof is valid under the stored verification key
 
 ---
 
