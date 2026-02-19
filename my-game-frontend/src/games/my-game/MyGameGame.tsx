@@ -39,6 +39,14 @@ type StoredSecretState = {
 type AuthMode = 'create' | 'import' | 'load';
 type UiPhase = 'auth' | 'game';
 const SECRET_STATE_KEY = 'my-game:latest-player1-secret';
+const PEG_COLOR_META: Record<number, { label: string; bg: string }> = {
+  1: { label: 'Red', bg: 'bg-red-500' },
+  2: { label: 'Blue', bg: 'bg-blue-500' },
+  3: { label: 'Green', bg: 'bg-green-500' },
+  4: { label: 'Yellow', bg: 'bg-yellow-400' },
+  5: { label: 'Orange', bg: 'bg-orange-500' },
+  6: { label: 'Purple', bg: 'bg-purple-500' },
+};
 
 function parseCsvDigits4(input: string): Guess4 {
   const values = input.split(',').map((s) => Number(s.trim()));
@@ -98,6 +106,26 @@ function parseGuessBuffer(guess: Buffer): Guess4 {
     throw new Error('On-chain guess is not a valid 1..6 guess');
   }
   return parsed;
+}
+
+function renderColorPeg(value: number, size = 'h-7 w-7') {
+  const meta = PEG_COLOR_META[value] ?? { label: `#${value}`, bg: 'bg-gray-300' };
+  return (
+    <div
+      className={`${size} ${meta.bg} rounded-full border border-gray-700 shadow-sm`}
+      title={`${value}: ${meta.label}`}
+    />
+  );
+}
+
+function renderFeedbackPegs(exact?: number, partial?: number) {
+  const exactN = Number(exact ?? 0);
+  const partialN = Number(partial ?? 0);
+  const pegs: Array<'black' | 'white' | 'empty'> = [];
+  for (let i = 0; i < exactN; i++) pegs.push('black');
+  for (let i = 0; i < partialN; i++) pegs.push('white');
+  while (pegs.length < 4) pegs.push('empty');
+  return pegs;
 }
 
 function signerFor(source: Keypair, all: Record<string, Keypair>) {
@@ -657,17 +685,19 @@ export function MyGameGame({
     return game.feedbacks[game.feedbacks.length - 1];
   })();
   const guessHistory = (() => {
-    if (!game) return [] as Array<{ guessId: number; guess: string; exact?: number; partial?: number }>;
+    if (!game) return [] as Array<{ guessId: number; guess: string; guessDigits: Guess4 | null; exact?: number; partial?: number }>;
     const feedbackById = new Map<number, { exact: number; partial: number }>();
     for (const fb of game.feedbacks) {
       feedbackById.set(Number(fb.guess_id), { exact: Number(fb.exact), partial: Number(fb.partial) });
     }
-    const rows: Array<{ guessId: number; guess: string; exact?: number; partial?: number }> = [];
+    const rows: Array<{ guessId: number; guess: string; guessDigits: Guess4 | null; exact?: number; partial?: number }> = [];
     for (const rec of game.guesses) {
       const guessId = Number(rec.guess_id);
       let guessText = '';
+      let guessDigits: Guess4 | null = null;
       try {
         const g = parseGuessBuffer(Buffer.from(rec.guess));
+        guessDigits = g;
         guessText = `${g[0]},${g[1]},${g[2]},${g[3]}`;
       } catch {
         guessText = '(invalid)';
@@ -676,6 +706,7 @@ export function MyGameGame({
       rows.push({
         guessId,
         guess: guessText,
+        guessDigits,
         exact: fb?.exact,
         partial: fb?.partial,
       });
@@ -943,7 +974,7 @@ export function MyGameGame({
       )}
 
       {phase === 'game' && (
-        <div style={{ display: 'grid', gap: '0.9rem' }}>
+        <div className="grid gap-4">
           {game?.ended ? (
             <div className="p-4 bg-gradient-to-r from-indigo-50 to-purple-50 border-2 border-indigo-200 rounded-xl">
               <p className="text-sm font-bold text-indigo-900">Game Ended</p>
@@ -959,58 +990,142 @@ export function MyGameGame({
             </div>
           ) : (
             <>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }}>
+              <div className="flex flex-wrap gap-2">
                 <button disabled={loading || quickstartLoading} onClick={handleBackToAuth}>Back To Auth</button>
               </div>
 
-              <div style={{ display: 'grid', gap: '0.5rem' }}>
-                <label>Session ID</label>
-                <input value={String(sessionId)} readOnly />
+              <div className="p-4 rounded-xl border-2 border-gray-200 bg-white grid gap-3">
+                <div className="grid sm:grid-cols-[120px_1fr] items-center gap-2">
+                  <label className="text-xs font-bold text-gray-600">Session ID</label>
+                  <input value={String(sessionId)} readOnly className="text-xs font-mono px-2 py-1 rounded border border-gray-300 bg-gray-50 max-w-[220px]" />
+                </div>
 
+                <div className="grid sm:grid-cols-[120px_1fr] items-start gap-2">
+                  <label className="text-xs font-bold text-gray-600 pt-1">Color Legend</label>
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    <div className="flex items-center gap-2 text-sm"><span>🔴</span><span>Red</span></div>
+                    <div className="flex items-center gap-2 text-sm"><span>🔵</span><span>Blue</span></div>
+                    <div className="flex items-center gap-2 text-sm"><span>🟢</span><span>Green</span></div>
+                    <div className="flex items-center gap-2 text-sm"><span>🟡</span><span>Yellow</span></div>
+                    <div className="flex items-center gap-2 text-sm"><span>🟠</span><span>Orange</span></div>
+                    <div className="flex items-center gap-2 text-sm"><span>🟣</span><span>Purple</span></div>
+                  </div>
+                </div>
+
+                <div className="grid sm:grid-cols-[120px_1fr] items-start gap-2">
+                  <label className="text-xs font-bold text-gray-600 pt-1">Feedback</label>
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    <div className="flex items-center gap-2 text-sm"><span>⚫</span><span>Black Peg (exact)</span></div>
+                    <div className="flex items-center gap-2 text-sm"><span>⚪</span><span>White Peg (partial)</span></div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
                 {isPlayer1 && (
-                  <>
-                    <label>Player1 Secret Digits (digits 1..6, duplicates allowed)</label>
-                    <input
-                      value={secretInput}
-                      onChange={(e) => setSecretInput(e.target.value)}
-                      disabled={!!game?.commitment}
-                    />
-
-                    <label>Salt (0x + 32 hex chars)</label>
+                  <div className="p-4 rounded-xl border-2 border-purple-200 bg-purple-50 grid gap-2">
+                    <label className="text-sm font-semibold text-purple-900">Salt (0x + 32 hex chars)</label>
                     <input
                       value={saltInput}
                       onChange={(e) => setSaltInput(e.target.value)}
                       disabled={!!game?.commitment}
+                      className="text-xs font-mono px-2 py-1 rounded border border-purple-300"
                     />
-                  </>
+                    <label className="text-sm font-semibold text-purple-900">Player1 Secret Digits (1..6, duplicates allowed)</label>
+                    <input
+                      value={secretInput}
+                      onChange={(e) => setSecretInput(e.target.value)}
+                      disabled={!!game?.commitment}
+                      className="text-sm font-mono px-2 py-1 rounded border border-purple-300"
+                    />
+                  </div>
                 )}
 
                 {isPlayer2 && (
-                  <>
-                    <label>Player2 Guess Digits (digits 1..6, duplicates allowed)</label>
-                    <input value={guessInput} onChange={(e) => setGuessInput(e.target.value)} />
-                  </>
+                  <div className="p-4 rounded-xl border-2 border-blue-200 bg-blue-50 grid gap-2">
+                    <label className="text-sm font-semibold text-blue-900">Player2 Guess Digits (1..6, duplicates allowed)</label>
+                    <input
+                      value={guessInput}
+                      onChange={(e) => setGuessInput(e.target.value)}
+                      className="text-sm font-mono px-2 py-1 rounded border border-blue-300"
+                    />
+                  </div>
                 )}
               </div>
 
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }}>
+              <div className="flex flex-wrap gap-2">
                 <button disabled={loading || quickstartLoading || !canCommit} onClick={handleCommit}>1) commit_code (P1)</button>
                 <button disabled={loading || quickstartLoading || !canGuess} onClick={handleGuess}>2) submit_guess (P2)</button>
                 <button disabled={loading || quickstartLoading || !canFeedback} onClick={handleFeedbackProof}>3) submit_feedback_proof (P1+zk)</button>
               </div>
 
-              {isPlayer2 && guessHistory.length > 0 && (
+              {guessHistory.length > 0 && (
                 <div className="p-4 bg-white border-2 border-gray-200 rounded-xl">
-                  <p className="text-sm font-bold text-gray-800 mb-2">Past Guesses & Feedback</p>
+                  <p className="text-sm font-bold text-gray-800 mb-3">Mastermind Board</p>
                   <div className="grid gap-2">
-                    {guessHistory.map((row) => (
-                      <div key={row.guessId} className="text-sm font-mono text-gray-700">
-                        #{row.guessId}: {row.guess}
-                        {row.exact !== undefined && row.partial !== undefined
-                          ? `  -> exact=${row.exact}, partial=${row.partial}`
-                          : '  -> waiting feedback'}
-                      </div>
-                    ))}
+                    {guessHistory.map((row) => {
+                      const fbPegs = renderFeedbackPegs(row.exact, row.partial);
+                      return (
+                        <div key={row.guessId} className="grid grid-cols-[56px_1fr_84px] items-center gap-3 p-2 rounded border border-gray-100">
+                          <div className="text-xs font-mono text-gray-600">#{row.guessId}</div>
+                          <div className="flex gap-2">
+                            {row.guessDigits
+                              ? row.guessDigits.map((d, i) => <div key={`${row.guessId}-g-${i}`}>{renderColorPeg(d)}</div>)
+                              : <span className="text-xs text-gray-500">{row.guess}</span>}
+                          </div>
+                          <div className="grid grid-cols-2 gap-1 justify-items-center">
+                            {fbPegs.map((p, i) => (
+                              <div
+                                key={`${row.guessId}-fb-${i}`}
+                                className={`h-3.5 w-3.5 rounded-full border ${
+                                  p === 'black'
+                                    ? 'bg-black border-black'
+                                    : p === 'white'
+                                      ? 'bg-white border-gray-400'
+                                      : 'bg-gray-200 border-gray-200'
+                                }`}
+                                title={p === 'black' ? 'exact' : p === 'white' ? 'partial' : 'empty'}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {latestFeedback && (
+                    <p className="text-xs text-gray-600 mt-3">
+                      Latest feedback: exact={String(latestFeedback.exact)}, partial={String(latestFeedback.partial)}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {isPlayer1 && pendingGuessDisplay && (
+                <div className="p-3 rounded-xl border border-purple-200 bg-purple-50">
+                  <p className="text-sm font-semibold text-purple-900 mb-2">Pending Guess To Judge</p>
+                  <div className="flex gap-2">
+                    {pendingGuessDisplay.split(',').map((raw, i) => {
+                      const d = Number(raw);
+                      return Number.isInteger(d) ? (
+                        <div key={`pending-${i}`}>{renderColorPeg(d, 'h-8 w-8')}</div>
+                      ) : null;
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {isPlayer2 && guessInput && (
+                <div className="p-3 rounded-xl border border-blue-200 bg-blue-50">
+                  <p className="text-sm font-semibold text-blue-900 mb-2">Current Guess Preview</p>
+                  <div className="flex gap-2">
+                    {guessInput.split(',').slice(0, 4).map((raw, i) => {
+                      const d = Number(raw.trim());
+                      return Number.isInteger(d) && d >= 1 && d <= 6 ? (
+                        <div key={`preview-${i}`}>{renderColorPeg(d, 'h-8 w-8')}</div>
+                      ) : (
+                        <div key={`preview-${i}`} className="h-8 w-8 rounded-full border border-gray-300 bg-gray-100" />
+                      );
+                    })}
                   </div>
                 </div>
               )}
