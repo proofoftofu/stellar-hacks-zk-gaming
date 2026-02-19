@@ -103,6 +103,44 @@ function assertCond(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
+function findContractErrorCodes(error: unknown): number[] {
+  const text = String(error);
+  const matches = [...text.matchAll(/Error\(Contract,\s*#(\d+)\)/g)];
+  return matches.map((m) => Number(m[1]));
+}
+
+async function expectContractFailure(
+  name: string,
+  run: () => Promise<void>,
+  expectedCodes: number[],
+) {
+  try {
+    await run();
+  } catch (error) {
+    const codes = findContractErrorCodes(error);
+    for (const code of expectedCodes) {
+      if (codes.includes(code)) {
+        console.log(`  ✅ ${name} rejected (contract #${code})`);
+        return;
+      }
+    }
+    throw new Error(
+      `${name} failed with unexpected error. expected one of [${expectedCodes.join(', ')}], got [${codes.join(', ')}]\n${String(error)}`,
+    );
+  }
+  throw new Error(`${name} unexpectedly succeeded`);
+}
+
+function expectProverFailure(name: string, run: () => void) {
+  try {
+    run();
+  } catch {
+    console.log(`  ✅ ${name} prover attempt rejected`);
+    return;
+  }
+  throw new Error(`${name} prover attempt unexpectedly succeeded`);
+}
+
 function toTomlArray(values: number[]): string {
   return `[${values.map((v) => `"${v}"`).join(', ')}]`;
 }
@@ -402,6 +440,110 @@ async function run() {
   assertCond(failAfter.winner === p1.publicKey(), 'fail scenario: winner should be player1');
   assertCond(Number(failAfter.attempts_used) === 4, `fail scenario: attempts_used should be 4, got ${String(failAfter.attempts_used)}`);
   console.log('  ✅ Scenario 2 passed');
+
+  console.log('\nScenario 3: Security bypass attempts are rejected');
+  const attackSession = baseSession + 2;
+  const attackGuess: Guess4 = [1, 2, 3, 5];
+  const attackFeedback = computeFeedback(secret, attackGuess);
+
+  await startGame(startClient, p1, attackSession, p1.publicKey(), p2.publicKey(), stake);
+  await (await player1Client.commit_code({ session_id: attackSession, commitment: commitmentBytes })).signAndSend();
+
+  await (await player2Client.submit_guess({ session_id: attackSession, guess: Buffer.from(attackGuess) })).signAndSend();
+  await expectContractFailure(
+    'double guess while pending feedback',
+    async () => {
+      await (await player2Client.submit_guess({ session_id: attackSession, guess: Buffer.from([4, 3, 2, 1]) })).signAndSend();
+    },
+    [6], // GuessPendingFeedback
+  );
+
+  const attackBefore = await fetchGameState(player1Client, attackSession);
+  const attackGuessId = Number(attackBefore.pending_guess_id);
+
+  // Try to prove a lie directly: this should fail during proving.
+  const liedExact = attackFeedback.exact === 4 ? 3 : attackFeedback.exact + 1;
+  const liedPartial = attackFeedback.partial;
+  expectProverFailure(
+    'prove a lie (wrong exact/partial)',
+    () => {
+      proveTurn({
+        sessionId: attackSession,
+        guessId: attackGuessId,
+        commitmentDec,
+        guess: attackGuess,
+        exact: liedExact,
+        partial: liedPartial,
+        secret,
+        salt,
+      });
+    },
+  );
+
+  const validAttackProof = proveTurn({
+    sessionId: attackSession,
+    guessId: attackGuessId,
+    commitmentDec,
+    guess: attackGuess,
+    exact: attackFeedback.exact,
+    partial: attackFeedback.partial,
+    secret,
+    salt,
+  });
+
+  await expectContractFailure(
+    'wrong guess_id in feedback proof',
+    async () => {
+      await (await player1Client.submit_feedback_proof({
+        session_id: attackSession,
+        guess_id: attackGuessId + 1,
+        exact: attackFeedback.exact,
+        partial: attackFeedback.partial,
+        proof_blob: validAttackProof,
+      })).signAndSend();
+    },
+    [8], // InvalidGuessId
+  );
+
+  await expectContractFailure(
+    'tampered feedback values with otherwise valid proof',
+    async () => {
+      await (await player1Client.submit_feedback_proof({
+        session_id: attackSession,
+        guess_id: attackGuessId,
+        exact: 0,
+        partial: 0,
+        proof_blob: validAttackProof,
+      })).signAndSend();
+    },
+    [10], // InvalidPublicInputs
+  );
+
+  const tamperedProof = Buffer.from(validAttackProof);
+  tamperedProof[tamperedProof.length - 1] ^= 0x01;
+  await expectContractFailure(
+    'tampered proof bytes',
+    async () => {
+      await (await player1Client.submit_feedback_proof({
+        session_id: attackSession,
+        guess_id: attackGuessId,
+        exact: attackFeedback.exact,
+        partial: attackFeedback.partial,
+        proof_blob: tamperedProof,
+      })).signAndSend();
+    },
+    [11], // InvalidProof
+  );
+
+  // Submit correct proof to ensure scenario state remains usable after rejected attacks.
+  await (await player1Client.submit_feedback_proof({
+    session_id: attackSession,
+    guess_id: attackGuessId,
+    exact: attackFeedback.exact,
+    partial: attackFeedback.partial,
+    proof_blob: validAttackProof,
+  })).signAndSend();
+  console.log('  ✅ Scenario 3 passed');
 
   console.log('\n✅ Integration scenarios passed');
 }
