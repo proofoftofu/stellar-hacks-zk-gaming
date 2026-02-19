@@ -115,6 +115,8 @@ https://jamesbachini.github.io/Stellar-Game-Studio/
 On-chain ZK verifier is forked from:
 https://github.com/tupui/ultrahonk_soroban_contract
 
+- The contract has been replaced with the latest version based on the feedback provided in Discord.
+
 ### Limitation
 
 I could not run the ZK verifier on Testnet because of budget limit issues, so the submitted project runs on local only.
