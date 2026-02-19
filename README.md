@@ -1,4 +1,4 @@
-## ZK Mastermind (my-game)
+## ZK Mastermind
 
 ### How It Works
 - `player1` commits a **salted hash commitment** of the secret code on-chain.
@@ -31,6 +31,12 @@ Tested toolchain in this repo:
 - `nargo`: `1.0.0-beta.9`
 - `noirc`: `1.0.0-beta.9+6abff2f16e1c1314ba30708d1cf032a536de3d19`
 - `bb`: `v0.87.0`
+
+### Repo Setup
+After cloning, initialize submodules:
+```bash
+git submodule update --init --recursive
+```
 
 ### Start Localnet First
 Before setup/deploy/tests, start local Soroban network:
