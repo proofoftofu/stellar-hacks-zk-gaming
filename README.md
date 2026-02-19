@@ -1,4 +1,4 @@
-## ZK Mastermind
+## ZK Mastermind on Steller
 
 ZK Mastermind is a zk-based on-chain Mastermind game built from Stellar Game Studio and run on Stellar localnet.
 
