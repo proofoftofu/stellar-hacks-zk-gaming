@@ -13,7 +13,9 @@
     "create": "bun run scripts/create.ts",
     "publish": "bun run scripts/publish.ts",
     "dev": "bun --cwd=sgs_frontend run dev",
-    "dev:game": "bun run scripts/dev-game.ts"
+    "dev:game": "bun run scripts/dev-game.ts",
+    "test:proof:valid": "bun --cwd=my-game-frontend run test:proof:valid",
+    "test:integrate": "bun --cwd=my-game-frontend run test:integrate"
   },
   "devDependencies": {
     "@types/bun": "latest"
