@@ -3,9 +3,10 @@
 ZK Mastermind is a zk-based on-chain Mastermind game built from Stellar Game Studio and run on Stellar localnet.
 
 - `player1` sets a secret 4-color code (any order).
-- `player2` tries to guess the code within 4 attempts.
+- `player2` tries to guess the code within 12 attempts.
 - ZK proof verifies that `player1`'s feedback (`exact` and `partial`) is correct.
 - Feedback is verified without revealing the secret answer.
+- Search space with current rule (4 unique digits chosen from 1..6): `6P4 = 6*5*4*3 = 360`.
 
 ### How It Works
 - `player1` commits a **salted hash commitment** of the secret code on-chain.
@@ -14,7 +15,7 @@ ZK Mastermind is a zk-based on-chain Mastermind game built from Stellar Game Stu
 - Contract verifies:
   - public inputs match on-chain state (`session_id`, `guess_id`, `commitment`, `guess`, `exact`, `partial`)
   - proof is valid against stored VK
-- If `exact == 4`, `player2` wins; otherwise after 4 attempts, `player1` wins.
+- If `exact == 4`, `player2` wins; otherwise after 12 attempts, `player1` wins.
 
 Notes:
 - The secret is not revealed; only feedback is public.
@@ -78,7 +79,7 @@ bun run test:integrate
 ```
 - Runs full scenarios:
   - solve path: `player2` wins
-  - fail path: 4 misses -> `player1` wins
+  - fail path: 12 misses -> `player1` wins
   - security checks (invalid / tampered submissions rejected)
 
 ### Quick Dev Flow

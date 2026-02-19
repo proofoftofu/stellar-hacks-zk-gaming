@@ -9,7 +9,9 @@ This circuit is a minimal Mastermind-style relation with public inputs:
 5. `exact`
 6. `partial`
 
-It currently uses a simple packed commitment (`secret` packed as 4 bytes), not keccak.
+It uses a salted one-way commitment:
+- `commitment = be31(blake2s(secret_bytes || salt_bytes))`
+- `secret` and `guess` are 4 unique digits in `1..6`
 
 ## 0) Prerequisites
 
@@ -28,7 +30,7 @@ Update `Prover.toml` to match your test session values.
 For the included sample:
 - `secret = [1,2,3,4]`
 - `guess = [1,2,3,4]`
-- `commitment = 16909060` (packed `0x01020304`)
+- `commitment = <decimal field value from blake2s(secret||salt)>`
 - `guess_packed = 16909060`
 - `exact = 4`, `partial = 0`
 
@@ -57,12 +59,11 @@ bb write_vk \
   -b target/my_game.json \
   -o target \
   --scheme ultra_honk \
-  --oracle_hash keccak \
-  --output_format bytes_and_fields
+  --oracle_hash keccak
 ```
 
 Expected VK file:
-- `target/vk_fields.json`
+- `target/vk`
 
 ## 6) Generate proof
 
@@ -72,8 +73,7 @@ bb prove \
   -w target/my_game.gz \
   -o target \
   --scheme ultra_honk \
-  --oracle_hash keccak \
-  --output_format bytes_and_fields
+  --oracle_hash keccak
 ```
 
 This writes proof artifacts under `target/` (format depends on bb version).

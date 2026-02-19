@@ -53,6 +53,7 @@ pub enum Error {
     AttemptsExhausted = 12,
     VerifierNotSet = 13,
     InvalidProofBlob = 14,
+    InvalidGuess = 15,
 }
 
 #[contracttype]
@@ -100,7 +101,7 @@ pub enum DataKey {
 }
 
 const GAME_TTL_LEDGERS: u32 = 518_400;
-const MAX_ATTEMPTS: u32 = 4;
+const MAX_ATTEMPTS: u32 = 12;
 
 #[contract]
 pub struct MyGameContract;
@@ -205,6 +206,7 @@ impl MyGameContract {
         }
 
         game.player2.require_auth();
+        Self::validate_guess_digits(&guess)?;
 
         let guess_id = game.next_guess_id;
         game.next_guess_id += 1;
@@ -385,6 +387,24 @@ impl MyGameContract {
             i += 1;
         }
         None
+    }
+
+    fn validate_guess_digits(guess: &BytesN<4>) -> Result<(), Error> {
+        let d0 = guess.get(0).unwrap_or(0);
+        let d1 = guess.get(1).unwrap_or(0);
+        let d2 = guess.get(2).unwrap_or(0);
+        let d3 = guess.get(3).unwrap_or(0);
+
+        for d in [d0, d1, d2, d3] {
+            if !(1..=6).contains(&d) {
+                return Err(Error::InvalidGuess);
+            }
+        }
+
+        if d0 == d1 || d0 == d2 || d0 == d3 || d1 == d2 || d1 == d3 || d2 == d3 {
+            return Err(Error::InvalidGuess);
+        }
+        Ok(())
     }
 
     fn build_public_inputs(

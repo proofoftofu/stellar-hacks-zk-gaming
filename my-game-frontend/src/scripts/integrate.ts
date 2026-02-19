@@ -392,13 +392,21 @@ async function run() {
   assertCond(solveAfter.winner === p2.publicKey(), 'solve scenario: winner should be player2');
   console.log('  ✅ Scenario 1 passed');
 
-  console.log('\nScenario 2: Player2 fails 4 times and Player1 wins');
+  console.log('\nScenario 2: Player2 fails 12 times and Player1 wins');
   const failSession = baseSession + 1;
   const failGuesses: Guess4[] = [
     [4, 3, 2, 1],
+    [1, 2, 3, 5],
+    [1, 2, 3, 6],
+    [1, 2, 4, 5],
+    [1, 2, 4, 6],
+    [1, 2, 5, 6],
     [1, 3, 4, 5],
+    [1, 3, 4, 6],
+    [1, 3, 5, 6],
     [1, 4, 5, 6],
-    [1, 5, 6, 7],
+    [2, 3, 4, 5],
+    [2, 3, 4, 6],
   ];
 
   await startGame(startClient, p1, failSession, p1.publicKey(), p2.publicKey(), stake);
@@ -438,7 +446,7 @@ async function run() {
   assertCond(!!failAfter.ended, 'fail scenario: game should be ended');
   assertCond(!failAfter.solved, 'fail scenario: solved should be false');
   assertCond(failAfter.winner === p1.publicKey(), 'fail scenario: winner should be player1');
-  assertCond(Number(failAfter.attempts_used) === 4, `fail scenario: attempts_used should be 4, got ${String(failAfter.attempts_used)}`);
+  assertCond(Number(failAfter.attempts_used) === 12, `fail scenario: attempts_used should be 12, got ${String(failAfter.attempts_used)}`);
   console.log('  ✅ Scenario 2 passed');
 
   console.log('\nScenario 3: Security bypass attempts are rejected');

@@ -45,8 +45,8 @@ function validateProveInput(input: ProveRequest) {
   assertCond(Number.isInteger(input.partial) && input.partial >= 0 && input.partial <= 4, 'partial must be 0..4');
   assertCond(input.exact + input.partial <= 4, 'exact + partial must be <= 4');
   assertCond(/^\d+$/.test(input.commitment), 'commitment must be decimal string');
-  assertArray('guess', input.guess, 4, 9);
-  assertArray('secret', input.secret, 4, 9);
+  assertArray('guess', input.guess, 4, 6);
+  assertArray('secret', input.secret, 4, 6);
   assertArray('salt', input.salt, 16, 255);
 }
 
@@ -199,7 +199,7 @@ Bun.serve({
 
       if (req.method === 'POST' && url.pathname === '/commitment') {
         const body = await req.json() as { secret: Guess4; salt: Salt16 };
-        assertArray('secret', body.secret, 4, 9);
+        assertArray('secret', body.secret, 4, 6);
         assertArray('salt', body.salt, 16, 255);
         return json({ commitment: blakeCommitment(body.secret, body.salt) });
       }

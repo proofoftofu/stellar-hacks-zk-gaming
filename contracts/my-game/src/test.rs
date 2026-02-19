@@ -229,7 +229,7 @@ fn test_invalid_proof_rejected() {
     let (env, client, hub, player1, player2) = setup_test();
     let session_id = 2u32;
     let commitment = commitment_from_4bytes(&env, [9, 9, 9, 9]);
-    let guess = BytesN::<4>::from_array(&env, &[0, 1, 2, 3]);
+    let guess = BytesN::<4>::from_array(&env, &[1, 2, 3, 5]);
 
     client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
     client.commit_code(&session_id, &commitment);
@@ -251,7 +251,7 @@ fn test_invalid_public_inputs_rejected() {
     let (env, client, _hub, player1, player2) = setup_test();
     let session_id = 3u32;
     let commitment = commitment_from_4bytes(&env, [4, 3, 2, 1]);
-    let guess = BytesN::<4>::from_array(&env, &[1, 1, 1, 1]);
+    let guess = BytesN::<4>::from_array(&env, &[1, 2, 4, 5]);
 
     client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
     client.commit_code(&session_id, &commitment);
@@ -268,8 +268,8 @@ fn test_guess_blocked_until_feedback_submitted() {
     let (env, client, _hub, player1, player2) = setup_test();
     let session_id = 4u32;
     let commitment = commitment_from_4bytes(&env, [4, 3, 2, 1]);
-    let guess1 = BytesN::<4>::from_array(&env, &[1, 1, 1, 1]);
-    let guess2 = BytesN::<4>::from_array(&env, &[2, 2, 2, 2]);
+    let guess1 = BytesN::<4>::from_array(&env, &[1, 2, 3, 4]);
+    let guess2 = BytesN::<4>::from_array(&env, &[1, 2, 3, 5]);
 
     client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
     client.commit_code(&session_id, &commitment);
@@ -280,7 +280,25 @@ fn test_guess_blocked_until_feedback_submitted() {
 }
 
 #[test]
-fn test_attempt_cap_player1_wins_on_fourth_feedback() {
+fn test_submit_guess_rejects_out_of_range_or_duplicate_digits() {
+    let (env, client, _hub, player1, player2) = setup_test();
+    let session_id = 41u32;
+    let commitment = commitment_from_4bytes(&env, [4, 3, 2, 1]);
+    let duplicate_guess = BytesN::<4>::from_array(&env, &[1, 1, 2, 3]);
+    let out_of_range_guess = BytesN::<4>::from_array(&env, &[1, 2, 3, 7]);
+
+    client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
+    client.commit_code(&session_id, &commitment);
+
+    let dup_result = client.try_submit_guess(&session_id, &duplicate_guess);
+    assert_game_error(&dup_result, Error::InvalidGuess);
+
+    let range_result = client.try_submit_guess(&session_id, &out_of_range_guess);
+    assert_game_error(&range_result, Error::InvalidGuess);
+}
+
+#[test]
+fn test_attempt_cap_player1_wins_on_twelfth_feedback() {
     let (env, client, hub, player1, player2) = setup_test();
     let session_id = 5u32;
     let commitment = commitment_from_4bytes(&env, [8, 8, 8, 8]);
@@ -288,9 +306,25 @@ fn test_attempt_cap_player1_wins_on_fourth_feedback() {
     client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
     client.commit_code(&session_id, &commitment);
 
-    for idx in 0..4u32 {
-        let guess = BytesN::<4>::from_array(&env, &[idx as u8, 0, 1, 2]);
+    let guesses: [[u8; 4]; 12] = [
+        [1, 2, 3, 5],
+        [1, 2, 3, 6],
+        [1, 2, 4, 5],
+        [1, 2, 4, 6],
+        [1, 2, 5, 6],
+        [1, 3, 4, 5],
+        [1, 3, 4, 6],
+        [1, 3, 5, 6],
+        [1, 4, 5, 6],
+        [2, 3, 4, 5],
+        [2, 3, 4, 6],
+        [2, 3, 5, 6],
+    ];
+
+    for (idx, raw_guess) in guesses.iter().enumerate() {
+        let guess = BytesN::<4>::from_array(&env, raw_guess);
         let guess_id = client.submit_guess(&session_id, &guess);
+        assert_eq!(guess_id, idx as u32);
         let public_inputs = build_public_inputs(&env, session_id, guess_id, &commitment, &guess, 1, 1);
         let proof_blob = build_proof_blob(&env, &public_inputs, true);
         client.submit_feedback_proof(&session_id, &guess_id, &1, &1, &proof_blob);
@@ -300,7 +334,7 @@ fn test_attempt_cap_player1_wins_on_fourth_feedback() {
     assert!(game.ended);
     assert!(!game.solved);
     assert_eq!(game.winner, Some(player1));
-    assert_eq!(game.attempts_used, 4);
+    assert_eq!(game.attempts_used, 12);
     assert_eq!(hub.get_end_count(&session_id), 1);
     assert_eq!(hub.get_last_outcome(&session_id), Some(true));
 }
@@ -310,7 +344,7 @@ fn test_reject_wrong_guess_id() {
     let (env, client, _hub, player1, player2) = setup_test();
     let session_id = 6u32;
     let commitment = commitment_from_4bytes(&env, [5, 5, 5, 5]);
-    let guess = BytesN::<4>::from_array(&env, &[3, 3, 3, 3]);
+    let guess = BytesN::<4>::from_array(&env, &[1, 2, 3, 6]);
 
     client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
     client.commit_code(&session_id, &commitment);

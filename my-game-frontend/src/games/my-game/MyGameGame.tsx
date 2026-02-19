@@ -42,8 +42,8 @@ const SECRET_STATE_KEY = 'my-game:latest-player1-secret';
 
 function parseCsvDigits4(input: string): Guess4 {
   const values = input.split(',').map((s) => Number(s.trim()));
-  if (values.length !== 4 || values.some((v) => !Number.isInteger(v) || v < 1 || v > 4)) {
-    throw new Error('Expected 4 comma-separated digits using only 1,2,3,4');
+  if (values.length !== 4 || values.some((v) => !Number.isInteger(v) || v < 1 || v > 6)) {
+    throw new Error('Expected 4 comma-separated digits using only 1..6');
   }
   const uniq = new Set(values);
   if (uniq.size !== 4) {
@@ -99,8 +99,8 @@ function parseGuessBuffer(guess: Buffer): Guess4 {
   if (guess.length !== 4) throw new Error(`Invalid guess buffer length ${guess.length}`);
   const parsed = [guess[0], guess[1], guess[2], guess[3]] as Guess4;
   const uniq = new Set(parsed);
-  if (parsed.some((v) => v < 1 || v > 4) || uniq.size !== 4) {
-    throw new Error('On-chain guess is not a valid unique 1..4 guess');
+  if (parsed.some((v) => v < 1 || v > 6) || uniq.size !== 4) {
+    throw new Error('On-chain guess is not a valid unique 1..6 guess');
   }
   return parsed;
 }
@@ -974,7 +974,7 @@ export function MyGameGame({
 
                 {isPlayer1 && (
                   <>
-                    <label>Player1 Secret Digits (unique 1,2,3,4)</label>
+                    <label>Player1 Secret Digits (unique 1..6)</label>
                     <input
                       value={secretInput}
                       onChange={(e) => setSecretInput(e.target.value)}
@@ -992,7 +992,7 @@ export function MyGameGame({
 
                 {isPlayer2 && (
                   <>
-                    <label>Player2 Guess Digits (unique 1,2,3,4)</label>
+                    <label>Player2 Guess Digits (unique 1..6)</label>
                     <input value={guessInput} onChange={(e) => setGuessInput(e.target.value)} />
                   </>
                 )}

@@ -22,14 +22,16 @@ fn main(
     let _sid = session_id;
     let _gid = guess_id;
 
-    // Digits in [0, 9] using constrained cast via u8.
+    // Digits in [1, 6] using constrained cast via u8.
     for i in 0..4 {
         let g_u8: u8 = guess[i] as u8;
         let s_u8: u8 = secret[i] as u8;
         assert(g_u8 as Field == guess[i]);
         assert(s_u8 as Field == secret[i]);
-        assert(g_u8 < 10);
-        assert(s_u8 < 10);
+        assert(g_u8 > 0);
+        assert(s_u8 > 0);
+        assert(g_u8 < 7);
+        assert(s_u8 < 7);
     }
 
     // Uniqueness simplifies partial match count logic.
