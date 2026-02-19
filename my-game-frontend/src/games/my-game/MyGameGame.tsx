@@ -661,6 +661,32 @@ export function MyGameGame({
     if (!game || game.feedbacks.length === 0) return null;
     return game.feedbacks[game.feedbacks.length - 1];
   })();
+  const guessHistory = (() => {
+    if (!game) return [] as Array<{ guessId: number; guess: string; exact?: number; partial?: number }>;
+    const feedbackById = new Map<number, { exact: number; partial: number }>();
+    for (const fb of game.feedbacks) {
+      feedbackById.set(Number(fb.guess_id), { exact: Number(fb.exact), partial: Number(fb.partial) });
+    }
+    const rows: Array<{ guessId: number; guess: string; exact?: number; partial?: number }> = [];
+    for (const rec of game.guesses) {
+      const guessId = Number(rec.guess_id);
+      let guessText = '';
+      try {
+        const g = parseGuessBuffer(Buffer.from(rec.guess));
+        guessText = `${g[0]},${g[1]},${g[2]},${g[3]}`;
+      } catch {
+        guessText = '(invalid)';
+      }
+      const fb = feedbackById.get(guessId);
+      rows.push({
+        guessId,
+        guess: guessText,
+        exact: fb?.exact,
+        partial: fb?.partial,
+      });
+    }
+    return rows;
+  })();
   const statusHint = game
     ? game.ended
       ? 'Game finished.'
@@ -977,6 +1003,22 @@ export function MyGameGame({
                 <button disabled={loading || quickstartLoading || !canGuess} onClick={handleGuess}>2) submit_guess (P2)</button>
                 <button disabled={loading || quickstartLoading || !canFeedback} onClick={handleFeedbackProof}>3) submit_feedback_proof (P1+zk)</button>
               </div>
+
+              {isPlayer2 && guessHistory.length > 0 && (
+                <div className="p-4 bg-white border-2 border-gray-200 rounded-xl">
+                  <p className="text-sm font-bold text-gray-800 mb-2">Past Guesses & Feedback</p>
+                  <div className="grid gap-2">
+                    {guessHistory.map((row) => (
+                      <div key={row.guessId} className="text-sm font-mono text-gray-700">
+                        #{row.guessId}: {row.guess}
+                        {row.exact !== undefined && row.partial !== undefined
+                          ? `  -> exact=${row.exact}, partial=${row.partial}`
+                          : '  -> waiting feedback'}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
