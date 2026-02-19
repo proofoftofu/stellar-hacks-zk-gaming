@@ -202,6 +202,12 @@ function classifyFailure(error: unknown): string {
   return 'Unknown';
 }
 
+function findContractCodes(error: unknown): number[] {
+  const text = String(error);
+  const matches = [...text.matchAll(/Error\(Contract,\s*#(\d+)\)/g)];
+  return matches.map((m) => Number(m[1]));
+}
+
 async function run() {
   const env = loadRootEnv();
   const rpcUrl = must(env, 'VITE_SOROBAN_RPC_URL');
@@ -248,8 +254,8 @@ async function run() {
   const mode = process.argv.includes('--valid') ? 'valid' : 'smoke';
   let sessionId = Number(process.argv[2] || (Date.now() % 1_000_000_000));
   const stake = 100_0000000n;
-  let commitment = Buffer.alloc(32, 7);
-  let guess = Buffer.from([1, 2, 3, 4]);
+  let commitment: Buffer<ArrayBufferLike> = Buffer.alloc(32, 7);
+  let guess: Buffer<ArrayBufferLike> = Buffer.from([1, 2, 3, 4]);
   let exact = 1;
   let partial = 1;
   let expectedGuessId = 0;
@@ -257,11 +263,17 @@ async function run() {
 
   if (mode === 'valid') {
     const proofPathCandidates = [
+      resolve(process.cwd(), 'zk/my-game-circuit/public/my-game.proof'),
+      resolve(process.cwd(), '../zk/my-game-circuit/public/my-game.proof'),
+      resolve(process.cwd(), '../../zk/my-game-circuit/public/my-game.proof'),
       resolve(process.cwd(), 'zk/my-game-circuit/target/proof'),
       resolve(process.cwd(), '../zk/my-game-circuit/target/proof'),
       resolve(process.cwd(), '../../zk/my-game-circuit/target/proof'),
     ];
     const publicInputsPathCandidates = [
+      resolve(process.cwd(), 'zk/my-game-circuit/public/my-game.public_inputs'),
+      resolve(process.cwd(), '../zk/my-game-circuit/public/my-game.public_inputs'),
+      resolve(process.cwd(), '../../zk/my-game-circuit/public/my-game.public_inputs'),
       resolve(process.cwd(), 'zk/my-game-circuit/target/public_inputs'),
       resolve(process.cwd(), '../zk/my-game-circuit/target/public_inputs'),
       resolve(process.cwd(), '../../zk/my-game-circuit/target/public_inputs'),
@@ -420,5 +432,12 @@ async function run() {
 run().catch((error) => {
   console.error('❌ proof smoke test failed');
   console.error(String(error));
+  const codes = findContractCodes(error);
+  if (codes.length > 0) {
+    console.error(`Detected contract error codes: ${codes.join(', ')}`);
+    if (codes.includes(11) && codes.includes(1)) {
+      console.error('Hint: my-game InvalidProof (#11) wrapped verifier VkParseError (#1). Redeploy verifier + set binary VK again.');
+    }
+  }
   process.exit(1);
 });
