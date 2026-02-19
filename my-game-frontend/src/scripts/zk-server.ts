@@ -27,6 +27,8 @@ type ProveRequest = {
   salt: Salt16;
 };
 
+let requestCounter = 0;
+
 function assertCond(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -147,8 +149,8 @@ function blakeCommitment(secret: Guess4, salt: Salt16): string {
   return value.toString();
 }
 
-function prove(input: ProveRequest): Buffer {
-  console.log('[zk-server] prove start', {
+function prove(input: ProveRequest, requestId: string): Buffer {
+  console.log(`[zk-server][${requestId}] prove start`, {
     session_id: input.session_id,
     guess_id: input.guess_id,
     exact: input.exact,
@@ -156,24 +158,34 @@ function prove(input: ProveRequest): Buffer {
     commitment_digits: input.commitment.length,
   });
   validateProveInput(input);
+  console.log(`[zk-server][${requestId}] input validated`);
   const circuitDir = findCircuitDir();
+  console.log(`[zk-server][${requestId}] circuit dir: ${circuitDir}`);
   const nargoBin = resolveBinary('nargo');
   const bbBin = resolveBinary('bb');
+  console.log(`[zk-server][${requestId}] binaries`, { nargoBin, bbBin });
   const proverTomlPath = resolve(circuitDir, 'Prover.toml');
   const previousToml = existsSync(proverTomlPath) ? readFileSync(proverTomlPath, 'utf8') : null;
   try {
+    console.log(`[zk-server][${requestId}] writing Prover.toml`);
     writeFileSync(proverTomlPath, buildProverToml(input), 'utf8');
+    console.log(`[zk-server][${requestId}] running nargo execute`);
     runCmd(nargoBin, ['execute'], circuitDir);
+    console.log(`[zk-server][${requestId}] running bb prove`);
     runCmd(bbBin, ['prove', '-b', 'target/my_game.json', '-w', 'target/my_game.gz', '-o', 'target', '--scheme', 'ultra_honk', '--oracle_hash', 'keccak'], circuitDir);
+    console.log(`[zk-server][${requestId}] reading proof artifacts`);
     const proof = Buffer.from(readFileSync(resolve(circuitDir, 'target/proof')));
     const publicInputs = Buffer.from(readFileSync(resolve(circuitDir, 'target/public_inputs')));
-    console.log('[zk-server] prove done', {
+    console.log(`[zk-server][${requestId}] prove done`, {
       proof_bytes: proof.length,
       public_inputs_bytes: publicInputs.length,
     });
     return buildProofBlob(publicInputs, proof);
   } finally {
-    if (previousToml !== null) writeFileSync(proverTomlPath, previousToml, 'utf8');
+    if (previousToml !== null) {
+      writeFileSync(proverTomlPath, previousToml, 'utf8');
+      console.log(`[zk-server][${requestId}] restored previous Prover.toml`);
+    }
   }
 }
 
@@ -208,29 +220,41 @@ const detectedBb = (() => {
 Bun.serve({
   port,
   async fetch(req: Request) {
+    const requestId = `req-${++requestCounter}`;
     const reqUrl = new URL(req.url);
-    console.log(`[zk-server] request ${req.method} ${reqUrl.pathname}`);
+    console.log(`[zk-server][${requestId}] request ${req.method} ${reqUrl.pathname}`);
     if (req.method === 'OPTIONS') return json({ ok: true });
 
     try {
       const url = reqUrl;
       if (req.method === 'GET' && url.pathname === '/health') {
+        console.log(`[zk-server][${requestId}] health ok`);
         return json({ ok: true, service: 'zk-server', port });
       }
 
       if (req.method === 'POST' && url.pathname === '/commitment') {
         const body = await req.json() as { secret: Guess4; salt: Salt16 };
+        console.log(`[zk-server][${requestId}] commitment request received`, {
+          secret_len: body.secret?.length,
+          salt_len: body.salt?.length,
+        });
         assertArray('secret', body.secret, 4, 6);
         assertArray('salt', body.salt, 16, 255);
         const commitment = blakeCommitment(body.secret, body.salt);
-        console.log('[zk-server] commitment done', { commitment_digits: commitment.length });
+        console.log(`[zk-server][${requestId}] commitment done`, { commitment_digits: commitment.length });
         return json({ commitment });
       }
 
       if (req.method === 'POST' && url.pathname === '/prove') {
         const body = await req.json() as ProveRequest;
-        const proofBlob = prove(body);
-        console.log('[zk-server] prove response', { proof_blob_bytes: proofBlob.length });
+        console.log(`[zk-server][${requestId}] prove request received`, {
+          session_id: body.session_id,
+          guess_id: body.guess_id,
+          exact: body.exact,
+          partial: body.partial,
+        });
+        const proofBlob = prove(body, requestId);
+        console.log(`[zk-server][${requestId}] prove response`, { proof_blob_bytes: proofBlob.length });
         return json({
           ok: true,
           proof_blob_base64: proofBlob.toString('base64'),
@@ -240,7 +264,7 @@ Bun.serve({
 
       return json({ error: 'not_found' }, 404);
     } catch (error) {
-      console.error('[zk-server] request error', String(error));
+      console.error(`[zk-server][${requestId}] request error`, String(error));
       return json({ error: String(error) }, 400);
     }
   },
