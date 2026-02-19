@@ -78,6 +78,36 @@ function runCmd(cmd: string, args: string[], cwd: string) {
   execFileSync(cmd, args, { cwd, stdio: 'pipe' });
 }
 
+function resolveBinary(name: 'nargo' | 'bb'): string {
+  const envOverride = name === 'nargo' ? process.env.NARGO_BIN : process.env.BB_BIN;
+  if (envOverride && existsSync(envOverride)) return envOverride;
+
+  const pathEntries = (process.env.PATH || '').split(':').filter(Boolean);
+  for (const entry of pathEntries) {
+    const candidate = resolve(entry, name);
+    if (existsSync(candidate)) return candidate;
+  }
+
+  const home = process.env.HOME || '';
+  const fallbacks = name === 'nargo'
+    ? [
+        resolve(home, '.nargo/bin/nargo'),
+        resolve(home, '.local/bin/nargo'),
+      ]
+    : [
+        resolve(home, '.bb/bb'),
+        resolve(home, '.local/bin/bb'),
+      ];
+
+  for (const candidate of fallbacks) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  throw new Error(
+    `${name} binary not found. Set ${name === 'nargo' ? 'NARGO_BIN' : 'BB_BIN'} or add ${name} to PATH.`,
+  );
+}
+
 function findCircuitDir(): string {
   const candidates = [
     resolve(process.cwd(), 'zk/my-game-circuit'),
@@ -112,12 +142,14 @@ function blakeCommitment(secret: Guess4, salt: Salt16): string {
 function prove(input: ProveRequest): Buffer {
   validateProveInput(input);
   const circuitDir = findCircuitDir();
+  const nargoBin = resolveBinary('nargo');
+  const bbBin = resolveBinary('bb');
   const proverTomlPath = resolve(circuitDir, 'Prover.toml');
   const previousToml = existsSync(proverTomlPath) ? readFileSync(proverTomlPath, 'utf8') : null;
   try {
     writeFileSync(proverTomlPath, buildProverToml(input), 'utf8');
-    runCmd('nargo', ['execute'], circuitDir);
-    runCmd('bb', ['prove', '-b', 'target/my_game.json', '-w', 'target/my_game.gz', '-o', 'target', '--scheme', 'ultra_honk', '--oracle_hash', 'keccak'], circuitDir);
+    runCmd(nargoBin, ['execute'], circuitDir);
+    runCmd(bbBin, ['prove', '-b', 'target/my_game.json', '-w', 'target/my_game.gz', '-o', 'target', '--scheme', 'ultra_honk', '--oracle_hash', 'keccak'], circuitDir);
     const proof = Buffer.from(readFileSync(resolve(circuitDir, 'target/proof')));
     const publicInputs = Buffer.from(readFileSync(resolve(circuitDir, 'target/public_inputs')));
     return buildProofBlob(publicInputs, proof);
@@ -139,6 +171,20 @@ function json(data: unknown, status = 200): Response {
 }
 
 const port = Number(process.env.ZK_SERVER_PORT || 8787);
+const detectedNargo = (() => {
+  try {
+    return resolveBinary('nargo');
+  } catch {
+    return '(not found)';
+  }
+})();
+const detectedBb = (() => {
+  try {
+    return resolveBinary('bb');
+  } catch {
+    return '(not found)';
+  }
+})();
 
 Bun.serve({
   port,
@@ -176,3 +222,4 @@ Bun.serve({
 });
 
 console.log(`zk_server listening on http://localhost:${port}`);
+console.log(`zk_server binaries: nargo=${detectedNargo}, bb=${detectedBb}`);

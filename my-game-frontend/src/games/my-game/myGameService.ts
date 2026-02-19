@@ -14,14 +14,17 @@ type ClientOptions = contract.ClientOptions;
 export class MyGameService {
   private baseClient: MyGameClient;
   private contractId: string;
+  private allowHttp: boolean;
 
   constructor(contractId: string) {
     this.contractId = contractId;
+    this.allowHttp = RPC_URL.startsWith('http://');
     // Base client for read-only operations
     this.baseClient = new MyGameClient({
       contractId: this.contractId,
       networkPassphrase: NETWORK_PASSPHRASE,
       rpcUrl: RPC_URL,
+      allowHttp: this.allowHttp,
     });
   }
 
@@ -36,6 +39,7 @@ export class MyGameService {
       contractId: this.contractId,
       networkPassphrase: NETWORK_PASSPHRASE,
       rpcUrl: RPC_URL,
+      allowHttp: this.allowHttp,
       publicKey,
       ...signer,
     };
@@ -125,6 +129,7 @@ export class MyGameService {
       contractId: this.contractId,
       networkPassphrase: NETWORK_PASSPHRASE,
       rpcUrl: RPC_URL,
+      allowHttp: this.allowHttp,
       publicKey: player2, // Player 2 is the transaction source
     });
 
@@ -360,6 +365,7 @@ export class MyGameService {
       contractId: this.contractId,
       networkPassphrase: NETWORK_PASSPHRASE,
       rpcUrl: RPC_URL,
+      allowHttp: this.allowHttp,
       publicKey: player2Address, // Player 2 is the transaction source
     });
 
