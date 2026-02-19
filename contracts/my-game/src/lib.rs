@@ -32,7 +32,7 @@ pub enum VerifierError {
 
 #[contractclient(name = "UltraHonkVerifierClient")]
 pub trait UltraHonkVerifier {
-    fn verify_proof_with_stored_vk(env: Env, proof_blob: Bytes) -> Result<BytesN<32>, VerifierError>;
+    fn verify_proof(env: Env, public_inputs: Bytes, proof_bytes: Bytes) -> Result<(), VerifierError>;
 }
 
 #[contracterror]
@@ -243,7 +243,7 @@ impl MyGameContract {
         let guess = Self::guess_by_id(&game, guess_id).ok_or(Error::InvalidGuessId)?;
         let expected_public_inputs =
             Self::build_public_inputs(&env, session_id, guess_id, &commitment, &guess, exact, partial);
-        let public_inputs = Self::extract_public_inputs_from_proof_blob(&env, &proof_blob)?;
+        let (public_inputs, proof_bytes) = Self::split_proof_blob(&proof_blob)?;
         if expected_public_inputs != public_inputs {
             return Err(Error::InvalidPublicInputs);
         }
@@ -254,8 +254,8 @@ impl MyGameContract {
             .get(&DataKey::VerifierAddress)
             .ok_or(Error::VerifierNotSet)?;
         let verifier = UltraHonkVerifierClient::new(&env, &verifier_addr);
-        match verifier.try_verify_proof_with_stored_vk(&proof_blob) {
-            Ok(Ok(_proof_id)) => {}
+        match verifier.try_verify_proof(&public_inputs, &proof_bytes) {
+            Ok(Ok(())) => {}
             _ => return Err(Error::InvalidProof),
         }
 
@@ -437,7 +437,7 @@ impl MyGameContract {
         out.append(&Bytes::from_array(env, &field));
     }
 
-    fn extract_public_inputs_from_proof_blob(_env: &Env, proof_blob: &Bytes) -> Result<Bytes, Error> {
+    fn split_proof_blob(proof_blob: &Bytes) -> Result<(Bytes, Bytes), Error> {
         let total_len = proof_blob.len();
         if total_len < 4 {
             return Err(Error::InvalidProofBlob);
@@ -449,7 +449,9 @@ impl MyGameContract {
             if rest_len >= proof_len {
                 let pi_len = rest_len - proof_len;
                 if pi_len % 32 == 0 {
-                    return Ok(proof_blob.slice(4..(4 + pi_len)));
+                    let public_inputs = proof_blob.slice(4..(4 + pi_len));
+                    let proof_bytes = proof_blob.slice(4 + pi_len..total_len);
+                    return Ok((public_inputs, proof_bytes));
                 }
             }
         }
