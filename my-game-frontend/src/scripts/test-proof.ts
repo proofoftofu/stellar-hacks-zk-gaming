@@ -1,10 +1,30 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { Keypair, TransactionBuilder, hash } from '@stellar/stellar-sdk';
 import { Client as MyGameClient } from '../../../bindings/my_game/src/index';
 
 type EnvMap = Record<string, string>;
+type Guess4 = [number, number, number, number];
+type Salt16 = [
+  number, number, number, number,
+  number, number, number, number,
+  number, number, number, number,
+  number, number, number, number
+];
+
+type TurnProofInput = {
+  sessionId: number;
+  guessId: number;
+  commitmentDec: string;
+  guess: Guess4;
+  exact: number;
+  partial: number;
+  secret: Guess4;
+  salt: Salt16;
+};
 
 function parseEnv(content: string): EnvMap {
   const out: EnvMap = {};
@@ -125,61 +145,6 @@ function buildSyntheticProofBlob(publicInputs: Buffer): Buffer {
   return Buffer.concat([header, publicInputs, proof]);
 }
 
-function parseU32FromField(field: Buffer): number {
-  if (field.length !== 32) throw new Error(`Expected 32-byte field, got ${field.length}`);
-  return (
-    ((field[28] ?? 0) << 24) |
-    ((field[29] ?? 0) << 16) |
-    ((field[30] ?? 0) << 8) |
-    (field[31] ?? 0)
-  ) >>> 0;
-}
-
-function readBinaryFileFromCandidates(candidates: string[]): Buffer {
-  for (const p of candidates) {
-    try {
-      return Buffer.from(readFileSync(p));
-    } catch {
-      // Try next path.
-    }
-  }
-  throw new Error(`File not found in any candidate path: ${candidates.join(', ')}`);
-}
-
-type ParsedPublicInputs = {
-  sessionId: number;
-  guessId: number;
-  commitment: Buffer;
-  guess: Buffer;
-  exact: number;
-  partial: number;
-};
-
-function parsePublicInputs(publicInputs: Buffer): ParsedPublicInputs {
-  if (publicInputs.length % 32 !== 0) {
-    throw new Error(`public_inputs length must be multiple of 32, got ${publicInputs.length}`);
-  }
-  if (publicInputs.length < 32 * 6) {
-    throw new Error(`public_inputs too short, expected at least 192 bytes, got ${publicInputs.length}`);
-  }
-
-  const field0 = publicInputs.subarray(0, 32);
-  const field1 = publicInputs.subarray(32, 64);
-  const field2 = publicInputs.subarray(64, 96);
-  const field3 = publicInputs.subarray(96, 128);
-  const field4 = publicInputs.subarray(128, 160);
-  const field5 = publicInputs.subarray(160, 192);
-
-  const sessionId = parseU32FromField(field0);
-  const guessId = parseU32FromField(field1);
-  const commitment = Buffer.from(field2);
-  const guess = Buffer.from(field3.subarray(28, 32));
-  const exact = parseU32FromField(field4);
-  const partial = parseU32FromField(field5);
-
-  return { sessionId, guessId, commitment, guess, exact, partial };
-}
-
 function buildProofBlobFromBb(publicInputs: Buffer, proof: Buffer): Buffer {
   if (publicInputs.length % 32 !== 0) {
     throw new Error(`public_inputs length must be multiple of 32, got ${publicInputs.length}`);
@@ -191,6 +156,99 @@ function buildProofBlobFromBb(publicInputs: Buffer, proof: Buffer): Buffer {
   const header = Buffer.alloc(4);
   header.writeUInt32BE(totalFields, 0);
   return Buffer.concat([header, publicInputs, proof]);
+}
+
+function toTomlArray(values: number[]): string {
+  return `[${values.map((v) => `"${v}"`).join(', ')}]`;
+}
+
+function packGuess(guess: Guess4): number {
+  return ((guess[0] << 24) | (guess[1] << 16) | (guess[2] << 8) | guess[3]) >>> 0;
+}
+
+function computeFeedback(secret: Guess4, guess: Guess4): { exact: number; partial: number } {
+  let exact = 0;
+  for (let i = 0; i < 4; i++) {
+    if (secret[i] === guess[i]) exact += 1;
+  }
+  let totalMatches = 0;
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      if (secret[i] === guess[j]) totalMatches += 1;
+    }
+  }
+  return { exact, partial: totalMatches - exact };
+}
+
+function blakeCommitment(secret: Guess4, salt: Salt16): string {
+  const preimage = Buffer.from([...secret, ...salt]);
+  const digest = createHash('blake2s256').update(preimage).digest();
+  let value = 0n;
+  for (let i = 0; i < 31; i++) {
+    value = (value << 8n) + BigInt(digest[i]);
+  }
+  return value.toString();
+}
+
+function commitmentFieldBytes(commitmentDec: string): Buffer {
+  const v = BigInt(commitmentDec);
+  const out = Buffer.alloc(32, 0);
+  let x = v;
+  for (let i = 31; i >= 0 && x > 0n; i--) {
+    out[i] = Number(x & 0xffn);
+    x >>= 8n;
+  }
+  return out;
+}
+
+function findCircuitDir(): string {
+  const candidates = [
+    resolve(process.cwd(), 'zk/my-game-circuit'),
+    resolve(process.cwd(), '../zk/my-game-circuit'),
+    resolve(process.cwd(), '../../zk/my-game-circuit'),
+  ];
+  for (const p of candidates) {
+    if (existsSync(resolve(p, 'Nargo.toml'))) return p;
+  }
+  throw new Error('Could not find zk/my-game-circuit (missing Nargo.toml)');
+}
+
+function buildProverToml(input: TurnProofInput): string {
+  return [
+    '# Auto-generated by test-proof.ts',
+    `session_id = "${input.sessionId}"`,
+    `guess_id = "${input.guessId}"`,
+    `commitment = "${input.commitmentDec}"`,
+    `guess_packed = "${packGuess(input.guess)}"`,
+    `exact = "${input.exact}"`,
+    `partial = "${input.partial}"`,
+    `salt = ${toTomlArray(input.salt)}`,
+    `secret = ${toTomlArray(input.secret)}`,
+    `guess = ${toTomlArray(input.guess)}`,
+    '',
+  ].join('\n');
+}
+
+function runCmd(cmd: string, args: string[], cwd: string) {
+  execFileSync(cmd, args, { cwd, stdio: 'inherit' });
+}
+
+function proveTurn(input: TurnProofInput): Buffer {
+  const circuitDir = findCircuitDir();
+  const proverTomlPath = resolve(circuitDir, 'Prover.toml');
+  const previousToml = existsSync(proverTomlPath) ? readFileSync(proverTomlPath, 'utf8') : null;
+  try {
+    writeFileSync(proverTomlPath, buildProverToml(input), 'utf8');
+    runCmd('nargo', ['execute'], circuitDir);
+    runCmd('bb', ['prove', '-b', 'target/my_game.json', '-w', 'target/my_game.gz', '-o', 'target', '--scheme', 'ultra_honk', '--oracle_hash', 'keccak'], circuitDir);
+    const proof = Buffer.from(readFileSync(resolve(circuitDir, 'target/proof')));
+    const publicInputs = Buffer.from(readFileSync(resolve(circuitDir, 'target/public_inputs')));
+    return buildProofBlobFromBb(publicInputs, proof);
+  } finally {
+    if (previousToml !== null) {
+      writeFileSync(proverTomlPath, previousToml, 'utf8');
+    }
+  }
 }
 
 function classifyFailure(error: unknown): string {
@@ -206,6 +264,17 @@ function findContractCodes(error: unknown): number[] {
   const text = String(error);
   const matches = [...text.matchAll(/Error\(Contract,\s*#(\d+)\)/g)];
   return matches.map((m) => Number(m[1]));
+}
+
+function parseSessionIdArg(argv: string[]): number {
+  for (const arg of argv.slice(2)) {
+    if (arg.startsWith('-')) continue;
+    const n = Number(arg);
+    if (Number.isInteger(n) && n >= 0 && n <= 0xffff_ffff) {
+      return n;
+    }
+  }
+  return Date.now() % 1_000_000_000;
 }
 
 async function run() {
@@ -252,7 +321,7 @@ async function run() {
   });
 
   const mode = process.argv.includes('--valid') ? 'valid' : 'smoke';
-  let sessionId = Number(process.argv[2] || (Date.now() % 1_000_000_000));
+  let sessionId = parseSessionIdArg(process.argv);
   const stake = 100_0000000n;
   let commitment: Buffer<ArrayBufferLike> = Buffer.alloc(32, 7);
   let guess: Buffer<ArrayBufferLike> = Buffer.from([1, 2, 3, 4]);
@@ -260,36 +329,32 @@ async function run() {
   let partial = 1;
   let expectedGuessId = 0;
   let validProofBlob: Buffer | null = null;
+  let runtimeProofInput: TurnProofInput | null = null;
 
   if (mode === 'valid') {
-    const proofPathCandidates = [
-      resolve(process.cwd(), 'zk/my-game-circuit/public/my-game.proof'),
-      resolve(process.cwd(), '../zk/my-game-circuit/public/my-game.proof'),
-      resolve(process.cwd(), '../../zk/my-game-circuit/public/my-game.proof'),
-      resolve(process.cwd(), 'zk/my-game-circuit/target/proof'),
-      resolve(process.cwd(), '../zk/my-game-circuit/target/proof'),
-      resolve(process.cwd(), '../../zk/my-game-circuit/target/proof'),
-    ];
-    const publicInputsPathCandidates = [
-      resolve(process.cwd(), 'zk/my-game-circuit/public/my-game.public_inputs'),
-      resolve(process.cwd(), '../zk/my-game-circuit/public/my-game.public_inputs'),
-      resolve(process.cwd(), '../../zk/my-game-circuit/public/my-game.public_inputs'),
-      resolve(process.cwd(), 'zk/my-game-circuit/target/public_inputs'),
-      resolve(process.cwd(), '../zk/my-game-circuit/target/public_inputs'),
-      resolve(process.cwd(), '../../zk/my-game-circuit/target/public_inputs'),
-    ];
+    const secret: Guess4 = [1, 2, 3, 4];
+    const salt: Salt16 = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26];
+    const guessArr: Guess4 = [1, 2, 3, 4];
+    const feedback = computeFeedback(secret, guessArr);
+    const commitmentDec = blakeCommitment(secret, salt);
 
-    const proofBytes = readBinaryFileFromCandidates(proofPathCandidates);
-    const publicInputsBytes = readBinaryFileFromCandidates(publicInputsPathCandidates);
-    const parsed = parsePublicInputs(publicInputsBytes);
+    expectedGuessId = 0;
+    commitment = commitmentFieldBytes(commitmentDec);
+    guess = Buffer.from(guessArr);
+    exact = feedback.exact;
+    partial = feedback.partial;
 
-    sessionId = parsed.sessionId;
-    expectedGuessId = parsed.guessId;
-    commitment = parsed.commitment;
-    guess = parsed.guess;
-    exact = parsed.exact;
-    partial = parsed.partial;
-    validProofBlob = buildProofBlobFromBb(publicInputsBytes, proofBytes);
+    // defer proving until we know actual on-chain guess_id; then create proof runtime.
+    runtimeProofInput = {
+      sessionId,
+      guessId: 0,
+      commitmentDec,
+      guess: guessArr,
+      exact,
+      partial,
+      secret,
+      salt,
+    };
   }
 
   console.log(`Mode: ${mode}`);
@@ -348,12 +413,14 @@ async function run() {
   console.log(`   guess_id=${guessId}`);
 
   if (mode === 'valid') {
-    if (!validProofBlob) throw new Error('Internal error: validProofBlob not prepared');
+    if (!runtimeProofInput) throw new Error('Internal error: runtime proof input missing');
+    runtimeProofInput.guessId = guessId;
     if (guessId !== expectedGuessId) {
-      throw new Error(`guess_id mismatch: on-chain ${guessId}, proof expects ${expectedGuessId}`);
+      throw new Error(`guess_id mismatch: on-chain ${guessId}, expected ${expectedGuessId}`);
     }
+    validProofBlob = proveTurn(runtimeProofInput);
 
-    console.log('4) submit_feedback_proof with real proof blob');
+    console.log('4) submit_feedback_proof with runtime-generated proof blob');
     const validTx = await player1Client.submit_feedback_proof({
       session_id: sessionId,
       guess_id: guessId,
