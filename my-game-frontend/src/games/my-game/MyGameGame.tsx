@@ -28,13 +28,17 @@ type Salt16 = [
   number, number, number, number,
   number, number, number, number,
 ];
+type StoredSecretState = {
+  sessionId: number;
+  player1: string;
+  secretInput: string;
+  saltHex: string;
+  updatedAt: number;
+};
 
 type AuthMode = 'create' | 'import' | 'load';
 type UiPhase = 'auth' | 'game';
-
-function stringifyWithBigInt(value: unknown): string {
-  return JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 2);
-}
+const SECRET_STATE_KEY = 'my-game:latest-player1-secret';
 
 function parseCsvDigits4(input: string): Guess4 {
   const values = input.split(',').map((s) => Number(s.trim()));
@@ -49,16 +53,16 @@ function parseCsvDigits4(input: string): Guess4 {
 }
 
 function parseCsvSalt16(input: string): Salt16 {
-  const values = input.split(',').map((s) => Number(s.trim()));
-  if (values.length !== 16 || values.some((v) => !Number.isInteger(v) || v < 0 || v > 255)) {
-    throw new Error('Expected 16 comma-separated bytes between 0 and 255');
+  const raw = input.trim();
+  const normalized = raw.startsWith('0x') || raw.startsWith('0X') ? raw.slice(2) : raw;
+  if (!/^[0-9a-fA-F]{32}$/.test(normalized)) {
+    throw new Error('Expected salt as 0x + 32 hex chars (16 bytes)');
   }
-  return [
-    values[0], values[1], values[2], values[3],
-    values[4], values[5], values[6], values[7],
-    values[8], values[9], values[10], values[11],
-    values[12], values[13], values[14], values[15],
-  ];
+  const values: number[] = [];
+  for (let i = 0; i < 32; i += 2) {
+    values.push(parseInt(normalized.slice(i, i + 2), 16));
+  }
+  return values as Salt16;
 }
 
 function randomSessionId(): number {
@@ -177,7 +181,7 @@ export function MyGameGame({
   const [sessionId, setSessionId] = useState<number>(randomSessionId());
   const [guessInput, setGuessInput] = useState('1,2,3,4');
   const [secretInput, setSecretInput] = useState('1,2,3,4');
-  const [saltInput, setSaltInput] = useState('11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26');
+  const [saltInput, setSaltInput] = useState('0x0b0c0d0e0f101112131415161718191a');
 
   const [preparedAuthCode, setPreparedAuthCode] = useState('');
   const [importAuthCode, setImportAuthCode] = useState('');
@@ -194,6 +198,7 @@ export function MyGameGame({
   const [quickstartLoading, setQuickstartLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [secretRecoveryError, setSecretRecoveryError] = useState('');
   const [authCodeCopied, setAuthCodeCopied] = useState(false);
   const [shareUrlCopied, setShareUrlCopied] = useState(false);
 
@@ -500,6 +505,15 @@ export function MyGameGame({
     const secret = parseCsvDigits4(secretInput);
     const salt = parseCsvSalt16(saltInput);
     const commitment = await fetchCommitment(secret, salt);
+    const saltHex = `0x${saltInput.trim().replace(/^0x/i, '').toLowerCase()}`;
+    const snapshot: StoredSecretState = {
+      sessionId,
+      player1: game.player1,
+      secretInput,
+      saltHex,
+      updatedAt: Date.now(),
+    };
+    localStorage.setItem(SECRET_STATE_KEY, JSON.stringify(snapshot));
 
     const client = createClient(game.player1);
     await (await client.commit_code({
@@ -508,6 +522,7 @@ export function MyGameGame({
     })).signAndSend();
 
     await loadGame(sessionId);
+    setSecretRecoveryError('');
     setMessage(`Commitment submitted: ${commitment}`);
   });
 
@@ -587,6 +602,7 @@ export function MyGameGame({
     setLoadSessionInput('');
     setMessage('');
     setError('');
+    setSecretRecoveryError('');
     setSessionId(randomSessionId());
   };
 
@@ -641,6 +657,10 @@ export function MyGameGame({
       return '';
     }
   })();
+  const latestFeedback = (() => {
+    if (!game || game.feedbacks.length === 0) return null;
+    return game.feedbacks[game.feedbacks.length - 1];
+  })();
   const statusHint = game
     ? game.ended
       ? 'Game finished.'
@@ -653,9 +673,42 @@ export function MyGameGame({
           ? `Player2 submitted a guess${pendingGuessDisplay ? ` (${pendingGuessDisplay})` : ''}. Submit feedback proof now.`
           : 'Guess submitted. Waiting for Player1 feedback proof.'
         : userAddress === game.player2
-          ? 'Your turn: submit next guess.'
+          ? latestFeedback
+            ? `Latest feedback: exact=${latestFeedback.exact}, partial=${latestFeedback.partial}. Your turn: submit next guess.`
+            : 'Your turn: submit next guess.'
           : 'Waiting for Player2 guess.'
     : '';
+  const latestBanner = (() => {
+    if (error) return { text: error, cls: 'from-red-50 to-pink-50 border-red-200 text-red-700' };
+    if (secretRecoveryError) return { text: secretRecoveryError, cls: 'from-red-50 to-pink-50 border-red-200 text-red-700' };
+    if (statusHint) return { text: statusHint, cls: 'from-green-50 to-emerald-50 border-green-200 text-green-700' };
+    return null;
+  })();
+
+  useEffect(() => {
+    if (!game || !userAddress) return;
+    if (!game.commitment || userAddress !== game.player1) {
+      setSecretRecoveryError('');
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(SECRET_STATE_KEY);
+      if (!raw) {
+        setSecretRecoveryError('You lost the secret and salt for this committed session. Please start again.');
+        return;
+      }
+      const saved = JSON.parse(raw) as StoredSecretState;
+      if (saved.sessionId !== sessionId || saved.player1 !== game.player1) {
+        setSecretRecoveryError('You lost the secret and salt for this committed session. Please start again.');
+        return;
+      }
+      setSecretInput(saved.secretInput);
+      setSaltInput(saved.saltHex);
+      setSecretRecoveryError('');
+    } catch {
+      setSecretRecoveryError('You lost the secret and salt for this committed session. Please start again.');
+    }
+  }, [game, userAddress, sessionId]);
 
   return (
     <div className="bg-white/70 backdrop-blur-xl rounded-2xl p-8 shadow-xl border-2 border-purple-200">
@@ -672,21 +725,9 @@ export function MyGameGame({
         </div>
       </div>
 
-      {error && (
-        <div className="mb-6 p-4 bg-gradient-to-r from-red-50 to-pink-50 border-2 border-red-200 rounded-xl">
-          <p className="text-sm font-semibold text-red-700">{error}</p>
-        </div>
-      )}
-
-      {message && (
-        <div className="mb-6 p-4 bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl">
-          <p className="text-sm font-semibold text-green-700">{message}</p>
-        </div>
-      )}
-
-      {statusHint && (
-        <div className="mb-6 p-4 bg-gradient-to-r from-sky-50 to-cyan-50 border-2 border-sky-200 rounded-xl">
-          <p className="text-sm font-semibold text-sky-700">{statusHint}</p>
+      {latestBanner && (
+        <div className={`mb-6 p-4 bg-gradient-to-r border-2 rounded-xl ${latestBanner.cls}`}>
+          <p className="text-sm font-semibold whitespace-pre-line">{latestBanner.text}</p>
         </div>
       )}
 
@@ -914,7 +955,7 @@ export function MyGameGame({
                       disabled={!!game?.commitment}
                     />
 
-                    <label>Salt 16 Bytes (0-255, csv)</label>
+                    <label>Salt (0x + 32 hex chars)</label>
                     <input
                       value={saltInput}
                       onChange={(e) => setSaltInput(e.target.value)}
@@ -941,9 +982,6 @@ export function MyGameGame({
         </div>
       )}
 
-      <pre style={{ whiteSpace: 'pre-wrap', background: '#111', color: '#ddd', padding: '0.75rem', borderRadius: 8 }}>
-        {stringifyWithBigInt(game)}
-      </pre>
     </div>
   );
 }
