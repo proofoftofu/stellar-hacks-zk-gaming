@@ -9,6 +9,9 @@ ZK Mastermind is a zk-based on-chain Mastermind game built from Stellar Game Stu
 - Current rule: 4 digits in `1..6`, duplicates allowed.
 - Search space with duplicates allowed: `6^4 = 1296`.
 
+### Demo
+https://youtu.be/5Pb5MpLzIqw
+
 ### How It Works
 - `Codemaker` commits a **salted hash commitment** of the secret code on-chain.
 - `Codebreaker` submits guesses on-chain.
