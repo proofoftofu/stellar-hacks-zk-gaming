@@ -31,7 +31,7 @@ type Salt16 = [
 type StoredSecretState = {
   sessionId: number;
   player1: string;
-  secretInput: string;
+  secretDigits: Guess4;
   saltHex: string;
   updatedAt: number;
 };
@@ -47,14 +47,6 @@ const PEG_COLOR_META: Record<number, { label: string; bg: string }> = {
   5: { label: 'Orange', bg: 'bg-orange-500' },
   6: { label: 'Purple', bg: 'bg-purple-500' },
 };
-
-function parseCsvDigits4(input: string): Guess4 {
-  const values = input.split(',').map((s) => Number(s.trim()));
-  if (values.length !== 4 || values.some((v) => !Number.isInteger(v) || v < 1 || v > 6)) {
-    throw new Error('Expected 4 comma-separated digits using only 1..6');
-  }
-  return [values[0], values[1], values[2], values[3]];
-}
 
 function parseCsvSalt16(input: string): Salt16 {
   const raw = input.trim();
@@ -126,6 +118,12 @@ function renderFeedbackPegs(exact?: number, partial?: number) {
   for (let i = 0; i < partialN; i++) pegs.push('white');
   while (pegs.length < 4) pegs.push('empty');
   return pegs;
+}
+
+function setGuessDigitAt(current: Guess4, index: number, value: number): Guess4 {
+  const next = [...current] as Guess4;
+  next[index] = value;
+  return next;
 }
 
 function signerFor(source: Keypair, all: Record<string, Keypair>) {
@@ -202,8 +200,8 @@ export function MyGameGame({
   const [authMode, setAuthMode] = useState<AuthMode>('create');
 
   const [sessionId, setSessionId] = useState<number>(randomSessionId());
-  const [guessInput, setGuessInput] = useState('1,2,3,4');
-  const [secretInput, setSecretInput] = useState('1,2,3,4');
+  const [guessDigits, setGuessDigits] = useState<Guess4>([1, 2, 3, 4]);
+  const [secretDigits, setSecretDigits] = useState<Guess4>([1, 2, 3, 4]);
   const [saltInput, setSaltInput] = useState('0x0b0c0d0e0f101112131415161718191a');
 
   const [preparedAuthCode, setPreparedAuthCode] = useState('');
@@ -432,7 +430,7 @@ export function MyGameGame({
 
     setPreparedAuthCode(authEntryXdr);
     setImportAuthCode(authEntryXdr);
-    setMessage('Auth code prepared. Share it with Player2 (any other wallet)');
+    setMessage('Auth code prepared. Share it with the Codebreaker (any other wallet)');
     console.log('[my-game-ui] prepared auth code length', authEntryXdr.length);
   });
 
@@ -443,7 +441,7 @@ export function MyGameGame({
 
     const parsed = myGameService.parseAuthEntry(importAuthCode.trim());
     if (parsed.player1 === userAddress) {
-      throw new Error('Player1 cannot import as Player2. Switch to another wallet.');
+      throw new Error('Codemaker cannot import as Codebreaker. Switch to another wallet.');
     }
 
     const stake = 100_0000000n;
@@ -523,16 +521,16 @@ export function MyGameGame({
   const handleCommit = () => run(async () => {
     console.log('[my-game-ui] commit', { sessionId });
     if (!game) throw new Error('Load game first');
-    if (userAddress !== game.player1) throw new Error(`Only Player1 can commit. Expected ${game.player1}`);
+    if (userAddress !== game.player1) throw new Error(`Only Codemaker can commit. Expected ${game.player1}`);
 
-    const secret = parseCsvDigits4(secretInput);
+    const secret = secretDigits;
     const salt = parseCsvSalt16(saltInput);
     const commitment = await fetchCommitment(secret, salt);
     const saltHex = `0x${saltInput.trim().replace(/^0x/i, '').toLowerCase()}`;
     const snapshot: StoredSecretState = {
       sessionId,
       player1: game.player1,
-      secretInput,
+      secretDigits: secret,
       saltHex,
       updatedAt: Date.now(),
     };
@@ -550,13 +548,13 @@ export function MyGameGame({
   });
 
   const handleGuess = () => run(async () => {
-    console.log('[my-game-ui] guess', { sessionId, guessInput });
+    console.log('[my-game-ui] guess', { sessionId, guessDigits });
     if (!game) throw new Error('Load game first');
-    if (userAddress !== game.player2) throw new Error(`Only Player2 can guess. Expected ${game.player2}`);
-    if (!game.commitment) throw new Error('Wait for Player1 to submit commitment first');
-    if (game.pending_guess_id !== null) throw new Error('Wait for Player1 feedback before next guess');
+    if (userAddress !== game.player2) throw new Error(`Only Codebreaker can guess. Expected ${game.player2}`);
+    if (!game.commitment) throw new Error('Wait for Codemaker to submit commitment first');
+    if (game.pending_guess_id !== null) throw new Error('Wait for Codemaker feedback before next guess');
 
-    const guess = parseCsvDigits4(guessInput);
+    const guess = guessDigits;
     const client = createClient(game.player2);
     await (await client.submit_guess({
       session_id: sessionId,
@@ -571,7 +569,7 @@ export function MyGameGame({
     console.log('[my-game-ui] feedback+proof', { sessionId });
     const latestGame = await fetchLatestGame();
     setGame(latestGame);
-    if (userAddress !== latestGame.player1) throw new Error(`Only Player1 can submit feedback proof. Expected ${latestGame.player1}`);
+    if (userAddress !== latestGame.player1) throw new Error(`Only Codemaker can submit feedback proof. Expected ${latestGame.player1}`);
     if (latestGame.pending_guess_id === undefined || latestGame.pending_guess_id === null) {
       throw new Error('No pending guess to prove feedback for');
     }
@@ -580,7 +578,7 @@ export function MyGameGame({
     const guessRecord = latestGame.guesses.find((g) => Number(g.guess_id) === pendingGuessId);
     if (!guessRecord) throw new Error(`Missing guess record for guess_id ${pendingGuessId}`);
 
-    const secret = parseCsvDigits4(secretInput);
+    const secret = secretDigits;
     const salt = parseCsvSalt16(saltInput);
     const commitment = await fetchCommitment(secret, salt);
     const guess = parseGuessBuffer(Buffer.from(guessRecord.guess));
@@ -656,10 +654,10 @@ export function MyGameGame({
 
   const winnerAddress = game?.winner ?? null;
   const winnerLabel = winnerAddress
-    ? winnerAddress === game?.player1
-      ? 'Player 1'
-      : winnerAddress === game?.player2
-        ? 'Player 2'
+      ? winnerAddress === game?.player1
+        ? 'Codemaker'
+        : winnerAddress === game?.player2
+          ? 'Codebreaker'
         : winnerAddress === userAddress
           ? 'You'
           : 'Unknown'
@@ -669,15 +667,14 @@ export function MyGameGame({
   const canCommit = !!game && !game.ended && userAddress === game.player1 && !game.commitment;
   const canGuess = !!game && !game.ended && userAddress === game.player2 && !!game.commitment && game.pending_guess_id === null;
   const canFeedback = !!game && !game.ended && userAddress === game.player1 && game.pending_guess_id !== null;
-  const pendingGuessDisplay = (() => {
-    if (!game || game.pending_guess_id === null || game.pending_guess_id === undefined) return '';
+  const pendingGuessDigits = (() => {
+    if (!game || game.pending_guess_id === null || game.pending_guess_id === undefined) return null as Guess4 | null;
     const rec = game.guesses.find((g) => Number(g.guess_id) === Number(game.pending_guess_id));
-    if (!rec) return '';
+    if (!rec) return null;
     try {
-      const g = parseGuessBuffer(Buffer.from(rec.guess));
-      return `${g[0]},${g[1]},${g[2]},${g[3]}`;
+      return parseGuessBuffer(Buffer.from(rec.guess));
     } catch {
-      return '';
+      return null;
     }
   })();
   const latestFeedback = (() => {
@@ -719,16 +716,16 @@ export function MyGameGame({
       : !game.commitment
         ? userAddress === game.player1
           ? 'Your turn: submit secret commitment first.'
-          : 'Waiting for Player1 to submit secret commitment.'
+          : 'Waiting for Codemaker to submit secret commitment.'
       : game.pending_guess_id !== undefined && game.pending_guess_id !== null
         ? userAddress === game.player1
-          ? `Player2 submitted a guess${pendingGuessDisplay ? ` (${pendingGuessDisplay})` : ''}. Submit feedback proof now.`
-          : 'Guess submitted. Waiting for Player1 feedback proof.'
+          ? `Codebreaker submitted a guess${pendingGuessDigits ? ` (${pendingGuessDigits.join(',')})` : ''}. Submit feedback proof now.`
+          : 'Guess submitted. Waiting for Codemaker feedback proof.'
         : userAddress === game.player2
           ? latestFeedback
             ? `Latest feedback: exact=${latestFeedback.exact}, partial=${latestFeedback.partial}. Your turn: submit next guess.`
             : 'Your turn: submit next guess.'
-          : 'Waiting for Player2 guess.'
+          : 'Waiting for Codebreaker guess.'
     : '';
   const latestBanner = (() => {
     if (error) return { text: error, cls: 'from-red-50 to-pink-50 border-red-200 text-red-700' };
@@ -754,7 +751,16 @@ export function MyGameGame({
         setSecretRecoveryError('You lost the secret and salt for this committed session. Please start again.');
         return;
       }
-      setSecretInput(saved.secretInput);
+      if (!Array.isArray(saved.secretDigits) || saved.secretDigits.length !== 4) {
+        setSecretRecoveryError('Saved secret format is invalid. Please start again.');
+        return;
+      }
+      setSecretDigits([
+        Number(saved.secretDigits[0]),
+        Number(saved.secretDigits[1]),
+        Number(saved.secretDigits[2]),
+        Number(saved.secretDigits[3]),
+      ]);
       setSaltInput(saved.saltHex);
       setSecretRecoveryError('');
     } catch {
@@ -769,10 +775,10 @@ export function MyGameGame({
           <h2 className="text-3xl font-black bg-gradient-to-r from-purple-600 via-pink-600 to-red-600 bg-clip-text text-transparent">
             ZK Mastermind
           </h2>
-          <p className="text-sm text-gray-700 font-semibold mt-1">Localnet auth-entry flow + proof feedback</p>
-          <p className="text-xs text-gray-500 font-mono mt-1">Session ID: {sessionId}</p>
-          <p className="text-xs text-gray-500 mt-1">
-            Connected: <span className="font-mono">{userAddress || '(none)'}</span> | Wallet: <span className="font-mono">{walletType}</span>
+          <p className="text-sm text-gray-700 font-semibold mt-1">Guess the 4-color code in up to 12 rounds.</p>
+          <p className="text-xs text-gray-600 mt-1">Codemaker sets a secret code, Codebreaker guesses it, and ZK proof verifies feedback without revealing the secret.</p>
+          <p className="text-lg font-black text-purple-700 mt-2">
+            You are {isPlayer1 ? 'Codemaker' : isPlayer2 ? 'Codebreaker' : 'Not In Session'}
           </p>
         </div>
       </div>
@@ -784,8 +790,8 @@ export function MyGameGame({
       )}
 
       {phase === 'auth' && (
-        <div className="space-y-6">
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 p-2 bg-gray-100 rounded-xl">
+        <div className="space-y-8">
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-4 p-3 bg-gray-100 rounded-xl">
             <button
               onClick={() => setAuthMode('create')}
               disabled={loading || quickstartLoading}
@@ -821,7 +827,7 @@ export function MyGameGame({
             </button>
           </div>
 
-          <div className="p-4 bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-yellow-200 rounded-xl">
+          <div className="p-5 bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-yellow-200 rounded-xl">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-bold text-yellow-900">⚡ Quickstart (Dev)</p>
@@ -840,9 +846,9 @@ export function MyGameGame({
           </div>
 
           {authMode === 'create' && (
-            <div className="space-y-6">
-              <div className="space-y-4">
-                <div>
+            <div className="space-y-7">
+              <div className="space-y-5">
+                <div className="pt-2">
                   <label className="block text-sm font-bold text-gray-700 mb-2">Session ID</label>
                   <input
                     value={String(sessionId)}
@@ -853,12 +859,12 @@ export function MyGameGame({
 
                 <div className="p-3 bg-blue-50 border-2 border-blue-200 rounded-xl">
                   <p className="text-xs font-semibold text-blue-800">
-                    ℹ️ Prepare Player1 auth entry, then any other connected wallet can import as Player2.
+                    ℹ️ Prepare Codemaker auth entry, then any other connected wallet can import as Codebreaker.
                   </p>
                 </div>
               </div>
 
-              <div className="pt-4 border-t-2 border-gray-100 space-y-4">
+              <div className="pt-5 border-t-2 border-gray-100 space-y-5">
                 {!preparedAuthCode ? (
                   <button
                     onClick={handlePrepareAuthCode}
@@ -898,11 +904,11 @@ export function MyGameGame({
           )}
 
           {authMode === 'import' && (
-            <div className="space-y-4">
-              <div className="p-4 bg-gradient-to-br from-blue-50 to-cyan-50 border-2 border-blue-200 rounded-xl">
-                <p className="text-sm font-semibold text-blue-800 mb-2">📥 Import Auth Entry from Player 1</p>
+            <div className="space-y-5">
+              <div className="p-5 bg-gradient-to-br from-blue-50 to-cyan-50 border-2 border-blue-200 rounded-xl">
+                <p className="text-sm font-semibold text-blue-800 mb-2">📥 Import Auth Entry from Codemaker</p>
                 <p className="text-xs text-gray-700 mb-4">
-                  Paste auth code and sign as the currently connected wallet (Player2).
+                  Paste auth code and sign as the currently connected wallet (Codebreaker).
                 </p>
                 <div className="space-y-3">
                   <div>
@@ -916,9 +922,9 @@ export function MyGameGame({
                   </div>
                   {parsedAuthInfo && (
                     <div className="p-3 rounded-xl bg-white border-2 border-blue-200 text-xs">
-                      <p><span className="font-bold">Player1 (fixed):</span> <span className="font-mono">{parsedAuthInfo.player1}</span></p>
+                      <p><span className="font-bold">Codemaker (fixed):</span> <span className="font-mono">{parsedAuthInfo.player1}</span></p>
                       <p><span className="font-bold">Session:</span> <span className="font-mono">{parsedAuthInfo.sessionId}</span></p>
-                      <p><span className="font-bold">Player1 points:</span> <span className="font-mono">{parsedAuthInfo.player1Points}</span></p>
+                      <p><span className="font-bold">Codemaker points:</span> <span className="font-mono">{parsedAuthInfo.player1Points}</span></p>
                     </div>
                   )}
                   {authParseError && (
@@ -938,8 +944,8 @@ export function MyGameGame({
           )}
 
           {authMode === 'load' && (
-            <div className="space-y-4">
-              <div className="p-4 bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl">
+            <div className="space-y-5">
+              <div className="p-5 bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl">
                 <p className="text-sm font-semibold text-green-800 mb-2">🎮 Load Existing Game by Session ID</p>
                 <p className="text-xs text-gray-700 mb-4">
                   Enter a session ID to load and continue an existing game.
@@ -952,7 +958,7 @@ export function MyGameGame({
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <button
                   onClick={handleLoadSession}
                   disabled={loading || quickstartLoading || !loadSessionInput.trim()}
@@ -990,10 +996,6 @@ export function MyGameGame({
             </div>
           ) : (
             <>
-              <div className="flex flex-wrap gap-2">
-                <button disabled={loading || quickstartLoading} onClick={handleBackToAuth}>Back To Auth</button>
-              </div>
-
               <div className="p-4 rounded-xl border-2 border-gray-200 bg-white grid gap-3">
                 <div className="grid sm:grid-cols-[120px_1fr] items-center gap-2">
                   <label className="text-xs font-bold text-gray-600">Session ID</label>
@@ -1003,20 +1005,20 @@ export function MyGameGame({
                 <div className="grid sm:grid-cols-[120px_1fr] items-start gap-2">
                   <label className="text-xs font-bold text-gray-600 pt-1">Color Legend</label>
                   <div className="grid sm:grid-cols-2 gap-2">
-                    <div className="flex items-center gap-2 text-sm"><span>🔴</span><span>Red</span></div>
-                    <div className="flex items-center gap-2 text-sm"><span>🔵</span><span>Blue</span></div>
-                    <div className="flex items-center gap-2 text-sm"><span>🟢</span><span>Green</span></div>
-                    <div className="flex items-center gap-2 text-sm"><span>🟡</span><span>Yellow</span></div>
-                    <div className="flex items-center gap-2 text-sm"><span>🟠</span><span>Orange</span></div>
-                    <div className="flex items-center gap-2 text-sm"><span>🟣</span><span>Purple</span></div>
+                    <div className="flex items-center gap-2 text-sm">{renderColorPeg(1, 'h-4 w-4')}<span>Red</span></div>
+                    <div className="flex items-center gap-2 text-sm">{renderColorPeg(2, 'h-4 w-4')}<span>Blue</span></div>
+                    <div className="flex items-center gap-2 text-sm">{renderColorPeg(3, 'h-4 w-4')}<span>Green</span></div>
+                    <div className="flex items-center gap-2 text-sm">{renderColorPeg(4, 'h-4 w-4')}<span>Yellow</span></div>
+                    <div className="flex items-center gap-2 text-sm">{renderColorPeg(5, 'h-4 w-4')}<span>Orange</span></div>
+                    <div className="flex items-center gap-2 text-sm">{renderColorPeg(6, 'h-4 w-4')}<span>Purple</span></div>
                   </div>
                 </div>
 
                 <div className="grid sm:grid-cols-[120px_1fr] items-start gap-2">
                   <label className="text-xs font-bold text-gray-600 pt-1">Feedback</label>
                   <div className="grid sm:grid-cols-2 gap-2">
-                    <div className="flex items-center gap-2 text-sm"><span>⚫</span><span>Black Peg (exact)</span></div>
-                    <div className="flex items-center gap-2 text-sm"><span>⚪</span><span>White Peg (partial)</span></div>
+                    <div className="flex items-center gap-2 text-sm"><span className="h-4 w-4 rounded-full bg-black border border-black inline-block" /><span>Black Peg (exact)</span></div>
+                    <div className="flex items-center gap-2 text-sm"><span className="h-4 w-4 rounded-full bg-white border border-gray-400 inline-block" /><span>White Peg (partial)</span></div>
                   </div>
                 </div>
               </div>
@@ -1031,39 +1033,75 @@ export function MyGameGame({
                       disabled={!!game?.commitment}
                       className="text-xs font-mono px-2 py-1 rounded border border-purple-300"
                     />
-                    <label className="text-sm font-semibold text-purple-900">Player1 Secret Digits (1..6, duplicates allowed)</label>
-                    <input
-                      value={secretInput}
-                      onChange={(e) => setSecretInput(e.target.value)}
-                      disabled={!!game?.commitment}
-                      className="text-sm font-mono px-2 py-1 rounded border border-purple-300"
-                    />
+                    <label className="text-sm font-semibold text-purple-900">Codemaker Secret (click colors)</label>
+                    <div className="flex gap-2 mb-2">
+                      {secretDigits.map((d, idx) => (
+                        <div key={`secret-selected-${idx}`}>{renderColorPeg(d, 'h-8 w-8')}</div>
+                      ))}
+                    </div>
+                    {[0, 1, 2, 3].map((idx) => (
+                      <div key={`secret-slot-${idx}`} className="grid grid-cols-[62px_1fr] items-center gap-2">
+                        <span className="text-xs font-semibold text-purple-700">Slot {idx + 1}</span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {[1, 2, 3, 4, 5, 6].map((value) => (
+                            <button
+                              key={`secret-${idx}-${value}`}
+                              type="button"
+                              disabled={!!game?.commitment}
+                              onClick={() => setSecretDigits((prev) => setGuessDigitAt(prev, idx, value))}
+                              className={`p-0.5 rounded-full border-2 ${secretDigits[idx] === value ? 'border-purple-700' : 'border-transparent'} disabled:opacity-50`}
+                              title={`${value} ${PEG_COLOR_META[value].label}`}
+                            >
+                              {renderColorPeg(value, 'h-6 w-6')}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
 
                 {isPlayer2 && (
                   <div className="p-4 rounded-xl border-2 border-blue-200 bg-blue-50 grid gap-2">
-                    <label className="text-sm font-semibold text-blue-900">Player2 Guess Digits (1..6, duplicates allowed)</label>
-                    <input
-                      value={guessInput}
-                      onChange={(e) => setGuessInput(e.target.value)}
-                      className="text-sm font-mono px-2 py-1 rounded border border-blue-300"
-                    />
+                    <label className="text-sm font-semibold text-blue-900">Codebreaker Guess (click colors)</label>
+                    <div className="flex gap-2 mb-2">
+                      {guessDigits.map((d, idx) => (
+                        <div key={`guess-selected-${idx}`}>{renderColorPeg(d, 'h-8 w-8')}</div>
+                      ))}
+                    </div>
+                    {[0, 1, 2, 3].map((idx) => (
+                      <div key={`guess-slot-${idx}`} className="grid grid-cols-[62px_1fr] items-center gap-2">
+                        <span className="text-xs font-semibold text-blue-700">Slot {idx + 1}</span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {[1, 2, 3, 4, 5, 6].map((value) => (
+                            <button
+                              key={`guess-${idx}-${value}`}
+                              type="button"
+                              onClick={() => setGuessDigits((prev) => setGuessDigitAt(prev, idx, value))}
+                              className={`p-0.5 rounded-full border-2 ${guessDigits[idx] === value ? 'border-blue-700' : 'border-transparent'}`}
+                              title={`${value} ${PEG_COLOR_META[value].label}`}
+                            >
+                              {renderColorPeg(value, 'h-6 w-6')}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <button disabled={loading || quickstartLoading || !canCommit} onClick={handleCommit}>1) commit_code (P1)</button>
-                <button disabled={loading || quickstartLoading || !canGuess} onClick={handleGuess}>2) submit_guess (P2)</button>
-                <button disabled={loading || quickstartLoading || !canFeedback} onClick={handleFeedbackProof}>3) submit_feedback_proof (P1+zk)</button>
+                <button disabled={loading || quickstartLoading || !canCommit} onClick={handleCommit}>1) commit_code (Codemaker)</button>
+                <button disabled={loading || quickstartLoading || !canGuess} onClick={handleGuess}>2) submit_guess (Codebreaker)</button>
+                <button disabled={loading || quickstartLoading || !canFeedback} onClick={handleFeedbackProof}>3) submit_feedback_proof (Codemaker+zk)</button>
               </div>
 
               {guessHistory.length > 0 && (
                 <div className="p-4 bg-white border-2 border-gray-200 rounded-xl">
                   <p className="text-sm font-bold text-gray-800 mb-3">Mastermind Board</p>
                   <div className="grid gap-2">
-                    {guessHistory.map((row) => {
+                    {[...guessHistory].reverse().map((row) => {
                       const fbPegs = renderFeedbackPegs(row.exact, row.partial);
                       return (
                         <div key={row.guessId} className="grid grid-cols-[56px_1fr_84px] items-center gap-3 p-2 rounded border border-gray-100">
@@ -1097,36 +1135,6 @@ export function MyGameGame({
                       Latest feedback: exact={String(latestFeedback.exact)}, partial={String(latestFeedback.partial)}
                     </p>
                   )}
-                </div>
-              )}
-
-              {isPlayer1 && pendingGuessDisplay && (
-                <div className="p-3 rounded-xl border border-purple-200 bg-purple-50">
-                  <p className="text-sm font-semibold text-purple-900 mb-2">Pending Guess To Judge</p>
-                  <div className="flex gap-2">
-                    {pendingGuessDisplay.split(',').map((raw, i) => {
-                      const d = Number(raw);
-                      return Number.isInteger(d) ? (
-                        <div key={`pending-${i}`}>{renderColorPeg(d, 'h-8 w-8')}</div>
-                      ) : null;
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {isPlayer2 && guessInput && (
-                <div className="p-3 rounded-xl border border-blue-200 bg-blue-50">
-                  <p className="text-sm font-semibold text-blue-900 mb-2">Current Guess Preview</p>
-                  <div className="flex gap-2">
-                    {guessInput.split(',').slice(0, 4).map((raw, i) => {
-                      const d = Number(raw.trim());
-                      return Number.isInteger(d) && d >= 1 && d <= 6 ? (
-                        <div key={`preview-${i}`}>{renderColorPeg(d, 'h-8 w-8')}</div>
-                      ) : (
-                        <div key={`preview-${i}`} className="h-8 w-8 rounded-full border border-gray-300 bg-gray-100" />
-                      );
-                    })}
-                  </div>
                 </div>
               )}
             </>
