@@ -12,6 +12,7 @@ import { existsSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Buffer } from "node:buffer";
 import { readEnvFile, getEnvValue } from './utils/env';
 import { getWorkspaceContracts, listContractNames, selectContracts } from "./utils/contracts";
 
@@ -410,6 +411,7 @@ if (shouldEnsureMock) {
 const deploysMyGame = contracts.some((c) => c.packageName === "my-game");
 let ultrahonkVerifierId = existingContractIds[ULTRAHONK_VERIFIER_KEY] || "";
 let ultrahonkVkHash = existingDeployment?.ultrahonkVkHash || "";
+let verifierUsesConstructor = false;
 if (deploysMyGame) {
   const candidateVerifierIds = isLocal
     ? []
@@ -439,20 +441,22 @@ if (deploysMyGame) {
       console.log(`♻️  Forcing fresh ${ULTRAHONK_VERIFIER_KEY} deployment on ${NETWORK} to avoid stale verifier code.`);
     }
     let verifierWasmPath = findUltraHonkVerifierWasmPath();
-    const verifierHasSetVkBytes =
+    let verifierHasSetVkBytes =
       verifierWasmPath ? await wasmHasFunction(verifierWasmPath, "set_vk_bytes") : false;
+    let verifierHasConstructor =
+      verifierWasmPath ? await wasmHasFunction(verifierWasmPath, "__constructor") : false;
     let verifierWasmProtocol = verifierWasmPath
       ? await inspectWasmProtocolVersion(verifierWasmPath)
       : null;
     const needsVerifierBuild =
       FORCE_REBUILD_ULTRAHONK_VERIFIER ||
       !verifierWasmPath ||
-      !verifierHasSetVkBytes ||
+      (!verifierHasSetVkBytes && !verifierHasConstructor) ||
       (verifierWasmProtocol !== null && verifierWasmProtocol < 25);
 
     if (needsVerifierBuild) {
-      if (!verifierHasSetVkBytes) {
-        console.log("Building UltraHonk verifier WASM with set_vk_bytes support...");
+      if (!verifierHasSetVkBytes && !verifierHasConstructor) {
+        console.log("Building UltraHonk verifier WASM (requires __constructor or set_vk_bytes)...");
       } else {
         console.log("Building protocol-25 UltraHonk verifier WASM...");
       }
@@ -463,10 +467,12 @@ if (deploysMyGame) {
         process.exit(1);
       }
       verifierWasmPath = findUltraHonkVerifierWasmPath();
-      const rebuiltHasSetVkBytes =
+      verifierHasSetVkBytes =
         verifierWasmPath ? await wasmHasFunction(verifierWasmPath, "set_vk_bytes") : false;
-      if (!rebuiltHasSetVkBytes) {
-        console.error("❌ Rebuilt verifier WASM still does not expose set_vk_bytes.");
+      verifierHasConstructor =
+        verifierWasmPath ? await wasmHasFunction(verifierWasmPath, "__constructor") : false;
+      if (!verifierHasSetVkBytes && !verifierHasConstructor) {
+        console.error("❌ Rebuilt verifier WASM exposes neither __constructor nor set_vk_bytes.");
         console.error(`  WASM: ${verifierWasmPath || "(missing)"}`);
         process.exit(1);
       }
@@ -491,8 +497,31 @@ if (deploysMyGame) {
 
     console.log(`Deploying ${ULTRAHONK_VERIFIER_KEY}...`);
     try {
-      const result =
-        await $`stellar contract deploy --wasm ${verifierWasmPath} --source-account ${adminSecret} --network ${NETWORK}`.text();
+      let result = "";
+      if (verifierHasConstructor) {
+        const vkBinPathFromEnv = getEnvValue(existingEnv, "ULTRAHONK_VK_BIN_PATH");
+        const vkBinPath = findUltraHonkVkBinPath(vkBinPathFromEnv);
+        if (!vkBinPath) {
+          console.error("❌ Constructor-based verifier requires a binary VK at deploy time.");
+          if (vkBinPathFromEnv) console.error(`  - ULTRAHONK_VK_BIN_PATH=${vkBinPathFromEnv} (missing)`);
+          console.error("Looked for binary VK in:");
+          for (const p of ULTRAHONK_VK_BIN_CANDIDATES) console.error(`  - ${p}`);
+          process.exit(1);
+        }
+        const vkBytes = Buffer.from(await Bun.file(vkBinPath).arrayBuffer());
+        if (vkBytes.length === 0) {
+          console.error(`❌ Binary VK file is empty: ${vkBinPath}`);
+          process.exit(1);
+        }
+        const vkHex = vkBytes.toString("hex");
+        console.log(`  Initializing VK via constructor from: ${vkBinPath}`);
+        result =
+          await $`stellar contract deploy --wasm ${verifierWasmPath} --source-account ${adminSecret} --network ${NETWORK} -- --vk-bytes ${vkHex}`.text();
+        verifierUsesConstructor = true;
+      } else {
+        result =
+          await $`stellar contract deploy --wasm ${verifierWasmPath} --source-account ${adminSecret} --network ${NETWORK}`.text();
+      }
       ultrahonkVerifierId = result.trim();
       deployed[ULTRAHONK_VERIFIER_KEY] = ultrahonkVerifierId;
       console.log(`✅ ${ULTRAHONK_VERIFIER_KEY} deployed: ${ultrahonkVerifierId}\n`);
@@ -502,6 +531,9 @@ if (deploysMyGame) {
     }
   }
 
+  if (verifierUsesConstructor) {
+    console.log("✅ Verifier VK initialized via constructor.\n");
+  } else {
   const vkBinPathFromEnv = getEnvValue(existingEnv, "ULTRAHONK_VK_BIN_PATH");
   const vkJsonPathFromEnv = getEnvValue(existingEnv, "ULTRAHONK_VK_JSON_PATH");
   const vkBinPath = findUltraHonkVkBinPath(vkBinPathFromEnv);
@@ -595,6 +627,7 @@ if (deploysMyGame) {
   if (!vkSet) {
     console.error("❌ Failed to set verifier VK from available sources.");
     process.exit(1);
+  }
   }
 }
 

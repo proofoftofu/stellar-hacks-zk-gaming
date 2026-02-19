@@ -55,15 +55,23 @@ pub struct MockUltraHonkVerifier;
 
 #[contractimpl]
 impl MockUltraHonkVerifier {
-    pub fn verify_proof_with_stored_vk(env: Env, proof_blob: Bytes) -> Result<BytesN<32>, VerifierError> {
-        let len = proof_blob.len();
-        if len < (4 + (440 * 32)) as u32 {
+    pub fn verify_proof(
+        env: Env,
+        public_inputs: Bytes,
+        proof_bytes: Bytes,
+    ) -> Result<(), VerifierError> {
+        if public_inputs.len() == 0 {
             return Err(VerifierError::ProofParseError);
         }
-        if proof_blob.get(len - 1).unwrap_or(0) == 0 {
+        let len = proof_bytes.len();
+        if len == 0 {
+            return Err(VerifierError::ProofParseError);
+        }
+        if proof_bytes.get(len - 1).unwrap_or(0) == 0 {
             return Err(VerifierError::VerificationFailed);
         }
-        Ok(env.crypto().keccak256(&proof_blob).into())
+        let _ = env;
+        Ok(())
     }
 }
 
