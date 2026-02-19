@@ -11,7 +11,7 @@ This circuit is a minimal Mastermind-style relation with public inputs:
 
 It uses a salted one-way commitment:
 - `commitment = be31(blake2s(secret_bytes || salt_bytes))`
-- `secret` and `guess` are 4 unique digits in `1..6`
+- `secret` and `guess` are 4 digits in `1..6` (duplicates allowed)
 
 ## 0) Prerequisites
 

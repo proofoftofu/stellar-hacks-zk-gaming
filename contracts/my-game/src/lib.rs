@@ -400,10 +400,6 @@ impl MyGameContract {
                 return Err(Error::InvalidGuess);
             }
         }
-
-        if d0 == d1 || d0 == d2 || d0 == d3 || d1 == d2 || d1 == d3 || d2 == d3 {
-            return Err(Error::InvalidGuess);
-        }
         Ok(())
     }
 

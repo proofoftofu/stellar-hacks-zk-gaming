@@ -45,10 +45,6 @@ function parseCsvDigits4(input: string): Guess4 {
   if (values.length !== 4 || values.some((v) => !Number.isInteger(v) || v < 1 || v > 6)) {
     throw new Error('Expected 4 comma-separated digits using only 1..6');
   }
-  const uniq = new Set(values);
-  if (uniq.size !== 4) {
-    throw new Error('Digits must be unique (no duplicates)');
-  }
   return [values[0], values[1], values[2], values[3]];
 }
 
@@ -76,10 +72,10 @@ function computeFeedback(secret: Guess4, guess: Guess4): { exact: number; partia
     if (secret[i] === guess[i]) exact += 1;
   }
   let totalMatches = 0;
-  for (let i = 0; i < 4; i++) {
-    for (let j = 0; j < 4; j++) {
-      if (secret[i] === guess[j]) totalMatches += 1;
-    }
+  for (let d = 1; d <= 6; d++) {
+    const secretCount = secret.filter((x) => x === d).length;
+    const guessCount = guess.filter((x) => x === d).length;
+    totalMatches += Math.min(secretCount, guessCount);
   }
   return { exact, partial: totalMatches - exact };
 }
@@ -98,9 +94,8 @@ function commitmentFieldBytes(commitmentDec: string): Buffer {
 function parseGuessBuffer(guess: Buffer): Guess4 {
   if (guess.length !== 4) throw new Error(`Invalid guess buffer length ${guess.length}`);
   const parsed = [guess[0], guess[1], guess[2], guess[3]] as Guess4;
-  const uniq = new Set(parsed);
-  if (parsed.some((v) => v < 1 || v > 6) || uniq.size !== 4) {
-    throw new Error('On-chain guess is not a valid unique 1..6 guess');
+  if (parsed.some((v) => v < 1 || v > 6)) {
+    throw new Error('On-chain guess is not a valid 1..6 guess');
   }
   return parsed;
 }
@@ -974,7 +969,7 @@ export function MyGameGame({
 
                 {isPlayer1 && (
                   <>
-                    <label>Player1 Secret Digits (unique 1..6)</label>
+                    <label>Player1 Secret Digits (digits 1..6, duplicates allowed)</label>
                     <input
                       value={secretInput}
                       onChange={(e) => setSecretInput(e.target.value)}
@@ -992,7 +987,7 @@ export function MyGameGame({
 
                 {isPlayer2 && (
                   <>
-                    <label>Player2 Guess Digits (unique 1..6)</label>
+                    <label>Player2 Guess Digits (digits 1..6, duplicates allowed)</label>
                     <input value={guessInput} onChange={(e) => setGuessInput(e.target.value)} />
                   </>
                 )}

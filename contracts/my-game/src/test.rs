@@ -280,7 +280,7 @@ fn test_guess_blocked_until_feedback_submitted() {
 }
 
 #[test]
-fn test_submit_guess_rejects_out_of_range_or_duplicate_digits() {
+fn test_submit_guess_accepts_duplicate_digits_but_rejects_out_of_range_digits() {
     let (env, client, _hub, player1, player2) = setup_test();
     let session_id = 41u32;
     let commitment = commitment_from_4bytes(&env, [4, 3, 2, 1]);
@@ -290,11 +290,11 @@ fn test_submit_guess_rejects_out_of_range_or_duplicate_digits() {
     client.start_game(&session_id, &player1, &player2, &100_0000000, &100_0000000);
     client.commit_code(&session_id, &commitment);
 
-    let dup_result = client.try_submit_guess(&session_id, &duplicate_guess);
-    assert_game_error(&dup_result, Error::InvalidGuess);
-
     let range_result = client.try_submit_guess(&session_id, &out_of_range_guess);
     assert_game_error(&range_result, Error::InvalidGuess);
+
+    let guess_id = client.submit_guess(&session_id, &duplicate_guess);
+    assert_eq!(guess_id, 0);
 }
 
 #[test]

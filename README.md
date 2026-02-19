@@ -6,7 +6,8 @@ ZK Mastermind is a zk-based on-chain Mastermind game built from Stellar Game Stu
 - `player2` tries to guess the code within 12 attempts.
 - ZK proof verifies that `player1`'s feedback (`exact` and `partial`) is correct.
 - Feedback is verified without revealing the secret answer.
-- Search space with current rule (4 unique digits chosen from 1..6): `6P4 = 6*5*4*3 = 360`.
+- Current rule: 4 digits in `1..6`, duplicates allowed.
+- Search space with duplicates allowed: `6^4 = 1296`.
 
 ### How It Works
 - `player1` commits a **salted hash commitment** of the secret code on-chain.

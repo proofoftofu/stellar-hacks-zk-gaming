@@ -34,14 +34,6 @@ fn main(
         assert(s_u8 < 7);
     }
 
-    // Uniqueness simplifies partial match count logic.
-    for i in 0..4 {
-        for j in (i + 1)..4 {
-            assert(guess[i] != guess[j]);
-            assert(secret[i] != secret[j]);
-        }
-    }
-
     // Bind guess bytes to the packed u32-style value.
     let packed_guess =
         guess[0] * 16777216 + // 256^3
@@ -75,17 +67,28 @@ fn main(
         }
     }
 
-    // Total matches with unique-digit assumption, then derive partial.
+    // Total matches by color counts, then derive partial.
     let mut total_matches = 0;
-    for i in 0..4 {
-        for j in 0..4 {
-            if secret[i] == guess[j] {
-                total_matches += 1;
+    for d in 1..7 {
+        let dv = d as Field;
+        let mut secret_count = 0;
+        let mut guess_count = 0;
+        for i in 0..4 {
+            if secret[i] == dv {
+                secret_count += 1;
             }
+            if guess[i] == dv {
+                guess_count += 1;
+            }
+        }
+        if secret_count < guess_count {
+            total_matches += secret_count;
+        } else {
+            total_matches += guess_count;
         }
     }
     let pa = total_matches - ex;
 
-    assert(exact == ex);
-    assert(partial == pa);
+    assert(exact == ex as Field);
+    assert(partial == pa as Field);
 }

@@ -155,10 +155,10 @@ function computeFeedback(secret: Guess4, guess: Guess4): { exact: number; partia
     if (secret[i] === guess[i]) exact += 1;
   }
   let totalMatches = 0;
-  for (let i = 0; i < 4; i++) {
-    for (let j = 0; j < 4; j++) {
-      if (secret[i] === guess[j]) totalMatches += 1;
-    }
+  for (let d = 1; d <= 6; d++) {
+    const secretCount = secret.filter((x) => x === d).length;
+    const guessCount = guess.filter((x) => x === d).length;
+    totalMatches += Math.min(secretCount, guessCount);
   }
   return { exact, partial: totalMatches - exact };
 }
