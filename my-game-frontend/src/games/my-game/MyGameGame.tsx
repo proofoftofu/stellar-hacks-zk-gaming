@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Buffer } from 'buffer';
 import { Keypair, TransactionBuilder, hash } from '@stellar/stellar-sdk';
 import { Client as MyGameClient, type Game } from './bindings';
@@ -42,7 +42,7 @@ type UiPhase = 'landing' | 'auth' | 'game';
 const SECRET_STATE_KEY = 'my-game:latest-player1-secret';
 const STELLAR_EXPERT_TX_BASE = 'https://stellar.expert/explorer/testnet/tx/';
 const DEMO_URL = import.meta.env.VITE_DEMO_URL || 'https://www.youtube.com/';
-const SOURCE_CODE_URL = import.meta.env.VITE_SOURCE_CODE_URL || 'https://github.com/';
+const SOURCE_CODE_URL = import.meta.env.VITE_SOURCE_CODE_URL || 'https://github.com/proofoftofu/stellar-hacks-zk-gaming';
 const PEG_COLOR_META: Record<number, { label: string; bg: string }> = {
   1: { label: 'Red', bg: 'bg-red-500' },
   2: { label: 'Blue', bg: 'bg-blue-500' },
@@ -84,6 +84,56 @@ function chooseProgressedState(prev: Game | null, next: Game): Game {
   if (!prev) return next;
   if (isStateRegression(prev, next)) return prev;
   return next;
+}
+
+function serializeGame(game: Game | null): string {
+  if (!game) return '';
+  return JSON.stringify(game, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+}
+
+function describeRemoteConfirmation(prev: Game | null, next: Game, userAddress: string): string | null {
+  if (!prev) return null;
+
+  if (!prev.ended && next.ended) {
+    const winner =
+      next.winner === next.player1 ? 'Codemaker'
+      : next.winner === next.player2 ? 'Codebreaker'
+      : 'Unknown';
+    return `On-chain update confirmed: game ended. Winner: ${winner}.`;
+  }
+
+  const prevHasCommitment = hasOptionValue(prev.commitment);
+  const nextHasCommitment = hasOptionValue(next.commitment);
+  if (!prevHasCommitment && nextHasCommitment && userAddress === next.player2) {
+    return 'On-chain update confirmed: Codemaker commitment received. You can submit a guess.';
+  }
+
+  if (next.guesses.length > prev.guesses.length && hasOptionValue(next.pending_guess_id) && userAddress === next.player1) {
+    return 'On-chain update confirmed: Codebreaker guess received. Submit feedback proof.';
+  }
+
+  if (next.feedbacks.length > prev.feedbacks.length && userAddress === next.player2) {
+    return 'On-chain update confirmed: Codemaker feedback proof received. You can submit the next guess.';
+  }
+
+  return null;
+}
+
+function currentTurnAction(game: Game): string {
+  if (game.ended) {
+    return 'Current turn: Game ended.';
+  }
+  if (!hasOptionValue(game.commitment)) {
+    return 'Current turn: Codemaker make commitment.';
+  }
+  if (hasOptionValue(game.pending_guess_id)) {
+    return 'Current turn: Codemaker submit feedback proof.';
+  }
+  return 'Current turn: Codebreaker submit guess.';
+}
+
+function isGameNotFoundError(err: unknown): boolean {
+  return String(err).includes('Game not found');
 }
 
 function sleep(ms: number): Promise<void> {
@@ -311,6 +361,7 @@ export function MyGameGame({
   const [secretRecoveryError, setSecretRecoveryError] = useState('');
   const [authCodeCopied, setAuthCodeCopied] = useState(false);
   const [shareUrlCopied, setShareUrlCopied] = useState(false);
+  const gameRef = useRef<Game | null>(null);
 
   const allowHttp = RPC_URL.startsWith('http://');
 
@@ -420,35 +471,53 @@ export function MyGameGame({
     }
   };
 
-  const loadGame = async (sid?: number) => {
+  const fetchLatestGameWithRetry = async (
+    sid: number,
+    retries: number = 5,
+    delayMs: number = 1_500
+  ): Promise<Game> => {
+    let lastErr: unknown = null;
+    for (let i = 0; i <= retries; i++) {
+      try {
+        return await fetchLatestGameBySession(sid);
+      } catch (e) {
+        lastErr = e;
+        if (!isGameNotFoundError(e) || i === retries) {
+          throw e;
+        }
+        await sleep(delayMs);
+      }
+    }
+    throw lastErr ?? new Error(`Game not found for session_id=${sid}`);
+  };
+
+  const loadGame = async (sid?: number): Promise<Game> => {
     const target = sid ?? sessionId;
     console.log('[my-game-ui] loadGame', { sessionId: target });
-    const reader = createClient(userAddress);
-    const tx = await reader.get_game({ session_id: target });
-    logTxCreated(`get_game(session_id=${target})`, tx);
-    const sim = await tx.simulate();
-    if (!sim.result.isOk()) {
-      throw new Error(`Game not found for session_id=${target}`);
-    }
-
-    const g = sim.result.unwrap();
+    const g = await fetchLatestGameWithRetry(target);
     if (userAddress && g.player1 !== userAddress && g.player2 !== userAddress) {
       throw new Error(`Connected wallet ${userAddress} is not part of this game`);
     }
 
     setSessionId(target);
     setGame((prev) => chooseProgressedState(prev, g));
+    gameRef.current = g;
     setPhase('game');
     console.log('[my-game-ui] game loaded', g);
+    return g;
   };
 
   const fetchLatestGame = async (): Promise<Game> => {
+    return fetchLatestGameBySession(sessionId);
+  };
+
+  const fetchLatestGameBySession = async (sid: number): Promise<Game> => {
     const reader = createClient(userAddress);
-    const tx = await reader.get_game({ session_id: sessionId });
-    logTxCreated(`get_game(session_id=${sessionId})`, tx);
+    const tx = await reader.get_game({ session_id: sid });
+    logTxCreated(`get_game(session_id=${sid})`, tx);
     const sim = await tx.simulate();
     if (!sim.result.isOk()) {
-      throw new Error(`Game not found for session_id=${sessionId}`);
+      throw new Error(`Game not found for session_id=${sid}`);
     }
     return sim.result.unwrap();
   };
@@ -456,12 +525,13 @@ export function MyGameGame({
   const waitForGameCondition = async (
     predicate: (next: Game) => boolean,
     timeoutMs: number = 90_000,
-    intervalMs: number = 2_000
+    intervalMs: number = 2_000,
+    sid: number = sessionId
   ): Promise<Game> => {
     const started = Date.now();
     while (Date.now() - started <= timeoutMs) {
       try {
-        const latest = await fetchLatestGame();
+        const latest = await fetchLatestGameBySession(sid);
         if (predicate(latest)) {
           return latest;
         }
@@ -498,7 +568,9 @@ export function MyGameGame({
             if (g.player1 === userAddress || g.player2 === userAddress) {
               setSessionId(sid);
               setGame(g);
+              gameRef.current = g;
               setPhase('game');
+              setMessage(`On-chain update confirmed: game session is live.\n${currentTurnAction(g)}`);
             }
           }
           return;
@@ -507,12 +579,18 @@ export function MyGameGame({
         if (phase === 'game') {
           const latest = await fetchLatestGame();
           if (stopped || pollId !== latestPollId) return;
-          setGame((prev: Game | null) => {
-            const progressed = chooseProgressedState(prev, latest);
-            const prevJson = prev ? JSON.stringify(prev, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)) : '';
-            const nextJson = JSON.stringify(progressed, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
-            return prevJson === nextJson ? prev : progressed;
-          });
+          const prev = gameRef.current;
+          const progressed = chooseProgressedState(prev, latest);
+          const prevJson = serializeGame(prev);
+          const nextJson = serializeGame(progressed);
+          if (prevJson !== nextJson) {
+            gameRef.current = progressed;
+            setGame(progressed);
+            const remoteMessage = describeRemoteConfirmation(prev, progressed, userAddress);
+            if (remoteMessage && !isAwaitingConfirmation) {
+              setMessage(remoteMessage);
+            }
+          }
         }
       } catch {
         // ignore polling errors (session may not exist yet)
@@ -526,6 +604,10 @@ export function MyGameGame({
       if (timer) clearInterval(timer);
     };
   }, [phase, userAddress, loadSessionInput, sessionId, isAwaitingConfirmation]);
+
+  useEffect(() => {
+    gameRef.current = game;
+  }, [game]);
 
   const handlePrepareAuthCode = () => run(async () => {
     console.log('[my-game-ui] prepare auth code', { sessionId, userAddress });
@@ -584,7 +666,10 @@ export function MyGameGame({
       await waitForGameCondition(
         (next) =>
           next.player1 === parsed.player1 &&
-          next.player2 === userAddress
+          next.player2 === userAddress,
+        90_000,
+        2_000,
+        parsed.sessionId
       );
     } finally {
       setIsAwaitingConfirmation(false);
@@ -597,11 +682,11 @@ export function MyGameGame({
         ? `Codebreaker start-game transaction confirmed. Loading game.\n${confirmedUrl}`
         : 'Codebreaker start-game transaction confirmed. Loading game...'
     );
-    await loadGame(parsed.sessionId);
+    const loaded = await loadGame(parsed.sessionId);
     setMessage(
       confirmedUrl
-        ? `Transaction confirmed. Waiting for Codemaker secret commitment.\n${confirmedUrl}`
-        : 'Transaction confirmed. Waiting for Codemaker secret commitment.'
+        ? `Transaction confirmed.\n${currentTurnAction(loaded)}\n${confirmedUrl}`
+        : `Transaction confirmed.\n${currentTurnAction(loaded)}`
     );
   });
 
@@ -609,8 +694,9 @@ export function MyGameGame({
     const sid = Number(loadSessionInput.trim());
     if (!Number.isInteger(sid) || sid <= 0) throw new Error('Enter valid session id');
     console.log('[my-game-ui] load existing session', sid);
-    await loadGame(sid);
-    setMessage('Loaded existing game');
+    setMessage('Session not found yet, retrying...');
+    const loaded = await loadGame(sid);
+    setMessage(`Loaded existing game.\n${currentTurnAction(loaded)}`);
   });
 
   const handleQuickStart = async () => {
