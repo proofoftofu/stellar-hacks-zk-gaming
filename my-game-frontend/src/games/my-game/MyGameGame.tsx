@@ -104,6 +104,15 @@ function txUrl(hash: string | null): string {
   return hash ? `${STELLAR_EXPERT_TX_BASE}${hash}` : '';
 }
 
+function extractFirstUrl(text: string): string | null {
+  const m = text.match(/https?:\/\/[^\s]+/);
+  return m ? m[0] : null;
+}
+
+function removeFirstUrl(text: string): string {
+  return text.replace(/https?:\/\/[^\s]+/, '').replace(/\n{2,}/g, '\n').trim();
+}
+
 function parseCsvSalt16(input: string): Salt16 {
   const raw = input.trim();
   const normalized = raw.startsWith('0x') || raw.startsWith('0X') ? raw.slice(2) : raw;
@@ -1055,7 +1064,16 @@ export function MyGameGame({
 
       {latestBanner && (
         <div className="pixel-banner">
-          <p className="whitespace-pre-line">{latestBanner.text}</p>
+          <p className="whitespace-pre-line">{removeFirstUrl(latestBanner.text)}</p>
+          {(() => {
+            const url = extractFirstUrl(latestBanner.text);
+            if (!url) return null;
+            return (
+              <a className="block mt-2 underline break-all" href={url} target="_blank" rel="noreferrer">
+                {url}
+              </a>
+            );
+          })()}
         </div>
       )}
 
