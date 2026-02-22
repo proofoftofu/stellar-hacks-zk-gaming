@@ -41,6 +41,8 @@ type AuthMode = 'create' | 'import' | 'load';
 type UiPhase = 'landing' | 'auth' | 'game';
 const SECRET_STATE_KEY = 'my-game:latest-player1-secret';
 const STELLAR_EXPERT_TX_BASE = 'https://stellar.expert/explorer/testnet/tx/';
+const DEMO_URL = import.meta.env.VITE_DEMO_URL || 'https://www.youtube.com/';
+const SOURCE_CODE_URL = import.meta.env.VITE_SOURCE_CODE_URL || 'https://github.com/';
 const PEG_COLOR_META: Record<number, { label: string; bg: string }> = {
   1: { label: 'Red', bg: 'bg-red-500' },
   2: { label: 'Blue', bg: 'bg-blue-500' },
@@ -1040,14 +1042,16 @@ export function MyGameGame({
   }, [game, userAddress, sessionId, hasCommitment]);
 
   return (
-    <div className="pixel-shell checker-bg">
-      <div className="pixel-topbar">
-        <h2 className="pixel-title">ZK MASTERMIND</h2>
-        <div className="pixel-status">
-          <span className="pixel-chip">ROLE: {isPlayer1 ? 'CODEMAKER' : isPlayer2 ? 'CODEBREAKER' : 'SPECTATOR'}</span>
-          <span className="pixel-chip">SESSION: {String(sessionId)}</span>
+    <div className={`pixel-shell checker-bg ${phase === 'landing' ? 'landing-mode' : ''}`}>
+      {phase !== 'landing' && (
+        <div className="pixel-topbar">
+          <h2 className="pixel-title">ZK MASTERMIND</h2>
+          <div className="pixel-status">
+            <span className="pixel-chip">ROLE: {isPlayer1 ? 'CODEMAKER' : isPlayer2 ? 'CODEBREAKER' : 'SPECTATOR'}</span>
+            <span className="pixel-chip">SESSION: {String(sessionId)}</span>
+          </div>
         </div>
-      </div>
+      )}
 
       {latestBanner && (
         <div className="pixel-banner">
@@ -1056,35 +1060,72 @@ export function MyGameGame({
       )}
 
       {phase === 'landing' && (
-        <section className="pixel-hero">
-          <p className="pixel-overline">TABLETOP ARCADE</p>
-          <h3 className="pixel-hero-title">A BOARD GAME DUEL ON STELLAR</h3>
-          <p className="pixel-hero-copy">
-            Codemaker sets a hidden 4-color code. Codebreaker cracks it in 12 rounds. Zero-knowledge proof validates each clue.
-          </p>
+        <section className="pixel-hero full-hero">
+          <div className="pixel-hero-main">
+            <div>
+              <h3 className="pixel-hero-title">ZK MASTERMIND</h3>
+              <p className="pixel-hero-copy">
+                Guess the hidden 4-color code in up to 12 rounds and use exact/partial feedback to solve it, powered by ZK proofs.
+              </p>
+              <div className="flex flex-wrap gap-3 mt-6">
+                <button className="pixel-btn" onClick={() => setPhase('auth')}>START GAME</button>
+                <a
+                  className="pixel-btn pixel-btn-alt inline-flex items-center"
+                  href={DEMO_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  WATCH DEMO
+                </a>
+                <a
+                  className="pixel-btn pixel-btn-alt inline-flex items-center"
+                  href={SOURCE_CODE_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  SOURCE CODE
+                </a>
+                {!isConnected && (
+                  <button className="pixel-btn pixel-btn-alt" onClick={() => void connect()} disabled={isConnecting}>
+                    {isConnecting ? 'CONNECTING...' : 'CONNECT WALLET'}
+                  </button>
+                )}
+              </div>
+              {walletError && <p className="text-sm text-red-700 font-semibold mt-3">{walletError}</p>}
+            </div>
+
+            <div className="pixel-stage">
+              <div className="pixel-stage-board">
+                <div className="stage-row">
+                  <div className="stage-pegs">{renderColorPeg(1, 'h-7 w-7')}{renderColorPeg(4, 'h-7 w-7')}{renderColorPeg(2, 'h-7 w-7')}{renderColorPeg(6, 'h-7 w-7')}</div>
+                  <div className="stage-clues"><span className="feedback-peg black" /><span className="feedback-peg white" /><span className="feedback-peg empty" /><span className="feedback-peg empty" /></div>
+                </div>
+                <div className="stage-row">
+                  <div className="stage-pegs">{renderColorPeg(3, 'h-7 w-7')}{renderColorPeg(2, 'h-7 w-7')}{renderColorPeg(1, 'h-7 w-7')}{renderColorPeg(5, 'h-7 w-7')}</div>
+                  <div className="stage-clues"><span className="feedback-peg black" /><span className="feedback-peg black" /><span className="feedback-peg white" /><span className="feedback-peg empty" /></div>
+                </div>
+                <div className="stage-row">
+                  <div className="stage-pegs">{renderColorPeg(1, 'h-7 w-7')}{renderColorPeg(3, 'h-7 w-7')}{renderColorPeg(5, 'h-7 w-7')}{renderColorPeg(2, 'h-7 w-7')}</div>
+                  <div className="stage-clues"><span className="feedback-peg black" /><span className="feedback-peg black" /><span className="feedback-peg black" /><span className="feedback-peg white" /></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div className="pixel-hero-grid">
             <div className="pixel-panel">
-              <p className="pixel-panel-title">1. ENTER TABLE</p>
-              <p>Connect local wallet pair and choose your role.</p>
+              <p className="pixel-panel-title">1. CODEMAKER COMMITS</p>
+              <p>Codemaker chooses a secret + salt, then stores only a hash commitment on-chain to prevent brute-force discovery of the secret.</p>
             </div>
             <div className="pixel-panel">
-              <p className="pixel-panel-title">2. CREATE OR IMPORT</p>
-              <p>Prepare auth entry as Codemaker or import as Codebreaker.</p>
+              <p className="pixel-panel-title">2. CODEBREAKER GUESSES</p>
+              <p>Codebreaker submits 4-color guesses on-chain against that commitment, with a maximum of 12 attempts.</p>
             </div>
             <div className="pixel-panel">
-              <p className="pixel-panel-title">3. PLAY THE BOARD</p>
-              <p>Place pegs, verify clues, and race to the final pattern.</p>
+              <p className="pixel-panel-title">3. FEEDBACK WITH ZK PROOF</p>
+              <p>Codemaker returns exact/partial matches and proves correctness without revealing the secret code.</p>
             </div>
           </div>
-          <div className="flex flex-wrap gap-3 mt-6">
-            <button className="pixel-btn" onClick={() => setPhase('auth')}>START GAME</button>
-            {!isConnected && (
-              <button className="pixel-btn pixel-btn-alt" onClick={() => void connect()} disabled={isConnecting}>
-                {isConnecting ? 'CONNECTING...' : 'CONNECT WALLET'}
-              </button>
-            )}
-          </div>
-          {walletError && <p className="text-sm text-red-700 font-semibold mt-3">{walletError}</p>}
         </section>
       )}
 

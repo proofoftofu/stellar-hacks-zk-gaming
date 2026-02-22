@@ -3,15 +3,15 @@ import { Layout } from './components/Layout';
 import { MyGameGame } from './games/my-game/MyGameGame';
 
 const GAME_ID = 'my-game';
-const GAME_TITLE = import.meta.env.VITE_GAME_TITLE || 'My Game';
-const GAME_TAGLINE = import.meta.env.VITE_GAME_TAGLINE || 'On-chain game on Stellar';
+const GAME_TITLE = import.meta.env.VITE_GAME_TITLE || 'ZK Mastermind';
+const GAME_TAGLINE = import.meta.env.VITE_GAME_TAGLINE || 'Crack the code. Prove it on-chain.';
 
 export default function App() {
   const contractId = config.contractIds[GAME_ID] || '';
   const hasContract = contractId && contractId !== 'YOUR_CONTRACT_ID';
 
   return (
-    <Layout title={GAME_TITLE} subtitle={GAME_TAGLINE}>
+    <Layout title={GAME_TITLE} subtitle={GAME_TAGLINE} hideBrand>
       {!hasContract ? (
         <div className="card">
           <h3 className="gradient-text">Contract Not Configured</h3>

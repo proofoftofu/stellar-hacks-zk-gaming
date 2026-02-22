@@ -4,10 +4,11 @@ import './Layout.css';
 interface LayoutProps {
   title?: string;
   subtitle?: string;
+  hideBrand?: boolean;
   children: React.ReactNode;
 }
 
-export function Layout({ title, subtitle, children }: LayoutProps) {
+export function Layout({ title, subtitle, hideBrand = false, children }: LayoutProps) {
   const resolvedTitle = title || import.meta.env.VITE_GAME_TITLE || 'Stellar Game';
   const resolvedSubtitle = subtitle || import.meta.env.VITE_GAME_TAGLINE || 'Testnet dev sandbox';
 
@@ -20,11 +21,13 @@ export function Layout({ title, subtitle, children }: LayoutProps) {
         <div className="studio-grid" />
       </div>
 
-      <header className="studio-header">
-        <div className="brand">
-          <div className="brand-title">{resolvedTitle}</div>
-          <p className="brand-subtitle">{resolvedSubtitle}</p>
-        </div>
+      <header className={`studio-header ${hideBrand ? 'brand-hidden' : ''}`}>
+        {!hideBrand && (
+          <div className="brand">
+            <div className="brand-title">{resolvedTitle}</div>
+            <p className="brand-subtitle">{resolvedSubtitle}</p>
+          </div>
+        )}
         <div className="header-actions">
           <WalletStandalone />
         </div>
