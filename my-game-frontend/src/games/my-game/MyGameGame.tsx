@@ -1169,7 +1169,7 @@ export function MyGameGame({
             <div>
               <h3 className="pixel-hero-title">ZK MASTERMIND</h3>
               <p className="pixel-hero-copy">
-                Guess the hidden 4-color code in up to 12 rounds and use exact/partial feedback to solve it, powered by ZK proofs.
+                Guess the hidden 4-color code in up to 12 rounds and use exact/partial feedback to solve it.
               </p>
               <div className="flex flex-wrap gap-3 mt-6">
                 <button className="pixel-btn" onClick={() => setPhase('auth')}>START GAME</button>
