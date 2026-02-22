@@ -1,4 +1,4 @@
-import { WalletSwitcher } from './WalletSwitcher';
+import { WalletStandalone } from './WalletStandalone';
 import './Layout.css';
 
 interface LayoutProps {
@@ -26,9 +26,7 @@ export function Layout({ title, subtitle, children }: LayoutProps) {
           <p className="brand-subtitle">{resolvedSubtitle}</p>
         </div>
         <div className="header-actions">
-          <div className="network-pill">Testnet</div>
-          <div className="network-pill dev-pill">Dev Wallets</div>
-          <WalletSwitcher />
+          <WalletStandalone />
         </div>
       </header>
 

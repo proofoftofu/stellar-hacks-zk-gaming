@@ -1,44 +1,13 @@
-import { useCallback, useEffect } from 'react';
-import { StellarWalletsKit } from '@creit-tech/stellar-wallets-kit/sdk';
-import { defaultModules } from '@creit-tech/stellar-wallets-kit/modules/utils';
-import { KitEventType, Networks } from '@creit-tech/stellar-wallets-kit/types';
+import { useCallback, useEffect, useState } from 'react';
 import { useWalletStore } from '../store/walletSlice';
 import { NETWORK, NETWORK_PASSPHRASE } from '../utils/constants';
 import type { ContractSigner } from '../types/signer';
-import type { WalletError } from '@stellar/stellar-sdk/contract';
+import {
+  standaloneWalletService,
+  type StandaloneWalletAccount,
+} from '../services/standaloneWalletService';
 
-const WALLET_ID = 'stellar-wallets-kit';
-let kitInitialized = false;
-
-function toWalletError(error?: { message: string; code: number }): WalletError | undefined {
-  if (!error) return undefined;
-  return { message: error.message, code: error.code };
-}
-
-function resolveNetwork(passphrase?: string): Networks {
-  if (passphrase && Object.values(Networks).includes(passphrase as Networks)) {
-    return passphrase as Networks;
-  }
-
-  return NETWORK === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
-}
-
-function ensureKitInitialized(passphrase?: string) {
-  if (typeof window === 'undefined') return;
-
-  if (!kitInitialized) {
-    StellarWalletsKit.init({
-      modules: defaultModules(),
-      network: resolveNetwork(passphrase),
-    });
-    kitInitialized = true;
-    return;
-  }
-
-  if (passphrase) {
-    StellarWalletsKit.setNetwork(resolveNetwork(passphrase));
-  }
-}
+const WALLET_ID = 'local-standalone-wallet';
 
 export function useWalletStandalone() {
   const {
@@ -56,27 +25,35 @@ export function useWalletStandalone() {
     setError,
     disconnect: storeDisconnect,
   } = useWalletStore();
+  const [wallets, setWallets] = useState<StandaloneWalletAccount[]>([]);
+  const [selectedWalletIndex, setSelectedWalletIndex] = useState<number | null>(null);
 
   const isWalletAvailable = typeof window !== 'undefined';
 
-  const connect = useCallback(async () => {
+  const loadWalletState = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const state = standaloneWalletService.getWallets();
+    setWallets(state.wallets);
+    setSelectedWalletIndex(state.selectedIndex);
+  }, []);
+
+  const connect = useCallback(async (): Promise<{ created: boolean }> => {
     if (typeof window === 'undefined') {
       setError('Wallet connection is only available in the browser.');
-      return;
+      throw new Error('Wallet connection is only available in the browser.');
     }
 
     try {
       setConnecting(true);
       setError(null);
 
-      ensureKitInitialized(NETWORK_PASSPHRASE);
-      const { address } = await StellarWalletsKit.authModal();
-      if (typeof address !== 'string' || !address) {
-        throw new Error('No wallet address returned');
-      }
-
-      setWallet(address, WALLET_ID, 'wallet');
+      const { wallets: localWallets, selectedIndex, created } = standaloneWalletService.ensureWallets();
+      const selectedWallet = localWallets[selectedIndex];
+      setWallets(localWallets);
+      setSelectedWalletIndex(selectedIndex);
+      setWallet(selectedWallet.publicKey, WALLET_ID, 'wallet');
       setNetwork(NETWORK, NETWORK_PASSPHRASE);
+      return { created };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to connect wallet';
       setError(message);
@@ -87,14 +64,14 @@ export function useWalletStandalone() {
   }, [setWallet, setConnecting, setError, setNetwork]);
 
   const refresh = useCallback(async () => {
+    if (typeof window === 'undefined') return;
     try {
-      if (typeof window === 'undefined') return;
-      ensureKitInitialized(NETWORK_PASSPHRASE);
-      const address = await StellarWalletsKit.getAddress();
-      if (typeof address === 'string' && address) {
-        setWallet(address, WALLET_ID, 'wallet');
-        setNetwork(NETWORK, NETWORK_PASSPHRASE);
-      }
+      const { wallets: localWallets, selectedIndex } = standaloneWalletService.getWallets();
+      const selectedWallet = localWallets[selectedIndex];
+      setWallets(localWallets);
+      setSelectedWalletIndex(selectedIndex);
+      setWallet(selectedWallet.publicKey, WALLET_ID, 'wallet');
+      setNetwork(NETWORK, NETWORK_PASSPHRASE);
     } catch {
       // ignore refresh failures
     }
@@ -104,120 +81,93 @@ export function useWalletStandalone() {
     storeDisconnect();
   }, [storeDisconnect]);
 
+  const switchLocalWallet = useCallback(async (walletIndex: number) => {
+    try {
+      setConnecting(true);
+      setError(null);
+      const selectedWallet = standaloneWalletService.selectWallet(walletIndex);
+      const { wallets: localWallets, selectedIndex } = standaloneWalletService.getWallets();
+      setWallets(localWallets);
+      setSelectedWalletIndex(selectedIndex);
+      setWallet(selectedWallet.publicKey, WALLET_ID, 'wallet');
+      setNetwork(NETWORK, NETWORK_PASSPHRASE);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to switch wallet';
+      setError(message);
+      throw err;
+    } finally {
+      setConnecting(false);
+    }
+  }, [setConnecting, setError, setWallet, setNetwork]);
+
+  const fundWallet = useCallback(async (walletIndex: number) => {
+    try {
+      setError(null);
+      const { wallets: localWallets } = standaloneWalletService.getWallets();
+      const wallet = localWallets[walletIndex];
+      if (!wallet) {
+        throw new Error(`Wallet ${walletIndex + 1} not found`);
+      }
+      await standaloneWalletService.fundWithFriendbot(wallet.publicKey);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to fund wallet';
+      setError(message);
+      throw err;
+    }
+  }, [setError]);
+
   const connectDev = useCallback(async (_playerNumber?: 1 | 2) => {
-    setError('Dev wallets are not available in standalone mode.');
-    throw new Error('Dev wallets are not available in standalone mode.');
-  }, [setError]);
+    if (typeof _playerNumber === 'number') {
+      await switchLocalWallet(_playerNumber === 1 ? 0 : 1);
+      return;
+    }
+    await connect();
+  }, [connect, switchLocalWallet]);
 
-  const switchPlayer = useCallback(async (_playerNumber?: 1 | 2) => {
-    setError('Dev wallets are not available in standalone mode.');
-    throw new Error('Dev wallets are not available in standalone mode.');
-  }, [setError]);
+  const switchPlayer = useCallback(async (playerNumber?: 1 | 2) => {
+    if (typeof playerNumber !== 'number') {
+      throw new Error('Player number is required');
+    }
+    await switchLocalWallet(playerNumber === 1 ? 0 : 1);
+  }, [switchLocalWallet]);
 
-  const isDevModeAvailable = useCallback(() => false, []);
+  const isDevModeAvailable = useCallback(() => true, []);
 
-  const isDevPlayerAvailable = useCallback(() => false, []);
+  const isDevPlayerAvailable = useCallback((_playerNumber: 1 | 2) => {
+    return wallets.length === 2;
+  }, [wallets.length]);
 
-  const getCurrentDevPlayer = useCallback(() => null, []);
+  const getCurrentDevPlayer = useCallback(() => {
+    if (selectedWalletIndex === null) return null;
+    return selectedWalletIndex === 0 ? 1 : 2;
+  }, [selectedWalletIndex]);
 
   const getContractSigner = useCallback((): ContractSigner => {
     if (!isConnected || !publicKey) {
       throw new Error('Wallet not connected');
     }
 
-    return {
-      signTransaction: async (
-        xdr: string,
-        opts?: { networkPassphrase?: string; address?: string; submit?: boolean; submitUrl?: string }
-      ) => {
-        try {
-          ensureKitInitialized(networkPassphrase || NETWORK_PASSPHRASE);
-          const result = await StellarWalletsKit.signTransaction(xdr, {
-            networkPassphrase: opts?.networkPassphrase || networkPassphrase || NETWORK_PASSPHRASE,
-            address: opts?.address || publicKey,
-            submit: opts?.submit,
-            submitUrl: opts?.submitUrl,
-          });
-
-          return {
-            signedTxXdr: result.signedTxXdr || xdr,
-            signerAddress: result.signerAddress || publicKey,
-          };
-        } catch (err) {
-          const message = err instanceof Error ? err.message : 'Failed to sign transaction';
-          return {
-            signedTxXdr: xdr,
-            signerAddress: publicKey,
-            error: toWalletError({ message, code: -1 }),
-          };
-        }
-      },
-
-      signAuthEntry: async (authEntry: string, opts?: { networkPassphrase?: string; address?: string }) => {
-        try {
-          ensureKitInitialized(networkPassphrase || NETWORK_PASSPHRASE);
-          const result = await StellarWalletsKit.signAuthEntry(authEntry, {
-            networkPassphrase: opts?.networkPassphrase || networkPassphrase || NETWORK_PASSPHRASE,
-            address: opts?.address || publicKey,
-          });
-
-          return {
-            signedAuthEntry: result.signedAuthEntry || authEntry,
-            signerAddress: result.signerAddress || publicKey,
-          };
-        } catch (err) {
-          const message = err instanceof Error ? err.message : 'Failed to sign auth entry';
-          return {
-            signedAuthEntry: authEntry,
-            signerAddress: publicKey,
-            error: toWalletError({ message, code: -1 }),
-          };
-        }
-      },
-    };
-  }, [isConnected, publicKey, networkPassphrase]);
+    const { wallets: localWallets, selectedIndex } = standaloneWalletService.getWallets();
+    const selectedWallet = localWallets[selectedIndex];
+    if (!selectedWallet) {
+      throw new Error('No local wallet selected');
+    }
+    return standaloneWalletService.getSigner(selectedWallet.secret);
+  }, [isConnected, publicKey]);
 
   useEffect(() => {
-    const bootstrap = async () => {
-      if (typeof window === 'undefined') return;
-      ensureKitInitialized(NETWORK_PASSPHRASE);
-      try {
-        const address = await StellarWalletsKit.getAddress();
-        if (typeof address === 'string' && address) {
-          setWallet(address, WALLET_ID, 'wallet');
-          setNetwork(NETWORK, NETWORK_PASSPHRASE);
-        }
-      } catch {
-        // ignore if no active address
-      }
-    };
-
-    bootstrap().catch(() => undefined);
-
-    if (typeof window === 'undefined') {
-      return;
+    if (typeof window === 'undefined') return;
+    try {
+      const { wallets: localWallets, selectedIndex } = standaloneWalletService.getWallets();
+      const selectedWallet = localWallets[selectedIndex];
+      setWallets(localWallets);
+      setSelectedWalletIndex(selectedIndex);
+      setWallet(selectedWallet.publicKey, WALLET_ID, 'wallet');
+      setNetwork(NETWORK, NETWORK_PASSPHRASE);
+    } catch {
+      loadWalletState();
     }
-
-    ensureKitInitialized(NETWORK_PASSPHRASE);
-    const unsubscribeState = StellarWalletsKit.on(KitEventType.STATE_UPDATED, (event) => {
-      const address = event.payload.address;
-      if (typeof address === 'string' && address) {
-        setWallet(address, WALLET_ID, 'wallet');
-      } else {
-        storeDisconnect();
-      }
-      setNetwork(NETWORK, event.payload.networkPassphrase || NETWORK_PASSPHRASE);
-    });
-
-    const unsubscribeDisconnect = StellarWalletsKit.on(KitEventType.DISCONNECT, () => {
-      storeDisconnect();
-    });
-
-    return () => {
-      unsubscribeState();
-      unsubscribeDisconnect();
-    };
-  }, [setWallet, setNetwork, storeDisconnect]);
+  }, [setWallet, setNetwork, loadWalletState]);
 
   return {
     // State
@@ -230,11 +180,15 @@ export function useWalletStandalone() {
     networkPassphrase,
     error,
     isWalletAvailable,
+    wallets,
+    selectedWalletIndex,
 
     // Actions
     connect,
     refresh,
     disconnect,
+    switchLocalWallet,
+    fundWallet,
     getContractSigner,
     connectDev,
     switchPlayer,
