@@ -1,6 +1,5 @@
 import { config } from './config';
 import { Layout } from './components/Layout';
-import { useWallet } from './hooks/useWallet';
 import { MyGameGame } from './games/my-game/MyGameGame';
 
 const GAME_ID = 'my-game';
@@ -8,8 +7,6 @@ const GAME_TITLE = import.meta.env.VITE_GAME_TITLE || 'My Game';
 const GAME_TAGLINE = import.meta.env.VITE_GAME_TAGLINE || 'On-chain game on Stellar';
 
 export default function App() {
-  const { publicKey, isConnected, isConnecting, error } = useWallet();
-  const userAddress = publicKey ?? '';
   const contractId = config.contractIds[GAME_ID] || '';
   const hasContract = contractId && contractId !== 'YOUR_CONTRACT_ID';
 
@@ -23,18 +20,9 @@ export default function App() {
             <code>VITE_MY_GAME_CONTRACT_ID</code> in the root <code>.env</code>.
           </p>
         </div>
-      ) : !isConnected ? (
-        <div className="card">
-          <h3 className="gradient-text">Connect Local Wallet</h3>
-          <p style={{ color: 'var(--color-ink-muted)', marginTop: '0.75rem' }}>
-            Click <code>Connect Wallet</code> in the header to create or load two local wallets.
-          </p>
-          {error && <div className="notice error" style={{ marginTop: '1rem' }}>{error}</div>}
-          {isConnecting && <div className="notice info" style={{ marginTop: '1rem' }}>Connecting...</div>}
-        </div>
       ) : (
         <MyGameGame
-          userAddress={userAddress}
+          userAddress=""
           currentEpoch={1}
           availablePoints={1000000000n}
           onStandingsRefresh={() => {}}

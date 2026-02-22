@@ -38,7 +38,7 @@ type StoredSecretState = {
 };
 
 type AuthMode = 'create' | 'import' | 'load';
-type UiPhase = 'auth' | 'game';
+type UiPhase = 'landing' | 'auth' | 'game';
 const SECRET_STATE_KEY = 'my-game:latest-player1-secret';
 const STELLAR_EXPERT_TX_BASE = 'https://stellar.expert/explorer/testnet/tx/';
 const PEG_COLOR_META: Record<number, { label: string; bg: string }> = {
@@ -255,21 +255,25 @@ async function fetchCommitment(secret: Guess4, salt: Salt16): Promise<string> {
 }
 
 export function MyGameGame({
-  userAddress,
+  userAddress: initialUserAddress,
   initialXDR,
   initialSessionId,
   onStandingsRefresh,
   onGameComplete,
 }: MyGameGameProps) {
   const {
+    publicKey,
     isConnected,
+    isConnecting,
+    error: walletError,
     wallets,
     connect,
     switchLocalWallet,
     getContractSigner,
   } = useWallet();
+  const userAddress = publicKey ?? initialUserAddress ?? '';
 
-  const [phase, setPhase] = useState<UiPhase>('auth');
+  const [phase, setPhase] = useState<UiPhase>('landing');
   const [authMode, setAuthMode] = useState<AuthMode>('create');
 
   const [sessionId, setSessionId] = useState<number>(randomSessionId());
@@ -313,12 +317,14 @@ export function MyGameGame({
   useEffect(() => {
     if (initialXDR) {
       console.log('[my-game-ui] initialXDR detected');
+      setPhase('auth');
       setAuthMode('import');
       setImportAuthCode(initialXDR);
       return;
     }
     if (initialSessionId !== null && initialSessionId !== undefined) {
       console.log('[my-game-ui] initialSessionId detected', initialSessionId);
+      setPhase('auth');
       setAuthMode('load');
       setLoadSessionInput(String(initialSessionId));
       return;
@@ -329,10 +335,12 @@ export function MyGameGame({
     const sid = params.get('session-id');
     if (auth) {
       console.log('[my-game-ui] URL auth detected');
+      setPhase('auth');
       setAuthMode('import');
       setImportAuthCode(auth);
     } else if (sid) {
       console.log('[my-game-ui] URL session-id detected', sid);
+      setPhase('auth');
       setAuthMode('load');
       setLoadSessionInput(sid);
     }
@@ -1032,359 +1040,294 @@ export function MyGameGame({
   }, [game, userAddress, sessionId, hasCommitment]);
 
   return (
-    <div className="bg-white/70 backdrop-blur-xl rounded-2xl p-8 shadow-xl border-2 border-purple-200">
-      <div className="flex items-center mb-6">
-        <div>
-          <h2 className="text-3xl font-black bg-gradient-to-r from-purple-600 via-pink-600 to-red-600 bg-clip-text text-transparent">
-            ZK Mastermind
-          </h2>
-          <p className="text-sm text-gray-700 font-semibold mt-1">Guess the 4-color code in up to 12 rounds.</p>
-          <p className="text-xs text-gray-600 mt-1">Codemaker sets a secret code, Codebreaker guesses it, and ZK proof verifies feedback without revealing the secret.</p>
-          <p className="text-lg font-black text-purple-700 mt-2">
-            You are {isPlayer1 ? 'Codemaker' : isPlayer2 ? 'Codebreaker' : 'Not In Session'}
-          </p>
+    <div className="pixel-shell checker-bg">
+      <div className="pixel-topbar">
+        <h2 className="pixel-title">ZK MASTERMIND</h2>
+        <div className="pixel-status">
+          <span className="pixel-chip">ROLE: {isPlayer1 ? 'CODEMAKER' : isPlayer2 ? 'CODEBREAKER' : 'SPECTATOR'}</span>
+          <span className="pixel-chip">SESSION: {String(sessionId)}</span>
         </div>
       </div>
 
       {latestBanner && (
-        <div className={`mb-6 p-4 bg-gradient-to-r border-2 rounded-xl ${latestBanner.cls}`}>
-          <p className="text-sm font-semibold whitespace-pre-line">{latestBanner.text}</p>
+        <div className="pixel-banner">
+          <p className="whitespace-pre-line">{latestBanner.text}</p>
         </div>
+      )}
+
+      {phase === 'landing' && (
+        <section className="pixel-hero">
+          <p className="pixel-overline">TABLETOP ARCADE</p>
+          <h3 className="pixel-hero-title">A BOARD GAME DUEL ON STELLAR</h3>
+          <p className="pixel-hero-copy">
+            Codemaker sets a hidden 4-color code. Codebreaker cracks it in 12 rounds. Zero-knowledge proof validates each clue.
+          </p>
+          <div className="pixel-hero-grid">
+            <div className="pixel-panel">
+              <p className="pixel-panel-title">1. ENTER TABLE</p>
+              <p>Connect local wallet pair and choose your role.</p>
+            </div>
+            <div className="pixel-panel">
+              <p className="pixel-panel-title">2. CREATE OR IMPORT</p>
+              <p>Prepare auth entry as Codemaker or import as Codebreaker.</p>
+            </div>
+            <div className="pixel-panel">
+              <p className="pixel-panel-title">3. PLAY THE BOARD</p>
+              <p>Place pegs, verify clues, and race to the final pattern.</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3 mt-6">
+            <button className="pixel-btn" onClick={() => setPhase('auth')}>START GAME</button>
+            {!isConnected && (
+              <button className="pixel-btn pixel-btn-alt" onClick={() => void connect()} disabled={isConnecting}>
+                {isConnecting ? 'CONNECTING...' : 'CONNECT WALLET'}
+              </button>
+            )}
+          </div>
+          {walletError && <p className="text-sm text-red-700 font-semibold mt-3">{walletError}</p>}
+        </section>
       )}
 
       {phase === 'auth' && (
-        <div className="space-y-8">
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-4 p-3 bg-gray-100 rounded-xl">
-            <button
-              onClick={() => setAuthMode('create')}
-              disabled={loading || quickstartLoading}
-              className={`flex-1 py-3 px-4 rounded-lg font-bold text-sm transition-all ${
-                authMode === 'create'
-                  ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg'
-                  : 'bg-white text-gray-600 hover:bg-gray-50'
-              }`}
-            >
-              Create & Export
-            </button>
-            <button
-              onClick={() => setAuthMode('import')}
-              disabled={loading || quickstartLoading}
-              className={`flex-1 py-3 px-4 rounded-lg font-bold text-sm transition-all ${
-                authMode === 'import'
-                  ? 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white shadow-lg'
-                  : 'bg-white text-gray-600 hover:bg-gray-50'
-              }`}
-            >
-              Import Auth Entry
-            </button>
-            <button
-              onClick={() => setAuthMode('load')}
-              disabled={loading || quickstartLoading}
-              className={`flex-1 py-3 px-4 rounded-lg font-bold text-sm transition-all ${
-                authMode === 'load'
-                  ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg'
-                  : 'bg-white text-gray-600 hover:bg-gray-50'
-              }`}
-            >
-              Load Existing Game
-            </button>
-          </div>
-
-          <div className="p-5 bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-yellow-200 rounded-xl">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-bold text-yellow-900">⚡ Quickstart (Dev)</p>
-                <p className="text-xs font-semibold text-yellow-800">
-                  Creates and signs for both local dev players in one click.
-                </p>
-              </div>
-              <button
-                onClick={handleQuickStart}
-                disabled={loading || quickstartLoading}
-                className="px-4 py-3 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 disabled:from-gray-200 disabled:to-gray-300 disabled:text-gray-500 transition-all shadow-md hover:shadow-lg transform hover:scale-105 disabled:transform-none"
-              >
-                {quickstartLoading ? 'Quickstarting...' : '⚡ Quickstart Game'}
+        <section className="grid gap-5">
+          {!isConnected ? (
+            <div className="pixel-panel">
+              <p className="pixel-panel-title">AUTH CHECKPOINT</p>
+              <p className="mb-4">Connect local wallet to create/import/start a game session.</p>
+              <button className="pixel-btn" onClick={() => void connect()} disabled={isConnecting}>
+                {isConnecting ? 'CONNECTING...' : 'CONNECT WALLET'}
               </button>
-            </div>
-          </div>
-
-          {authMode === 'create' && (
-            <div className="space-y-7">
-              <div className="space-y-5">
-                <div className="pt-2">
-                  <label className="block text-sm font-bold text-gray-700 mb-2">Session ID</label>
-                  <input
-                    value={String(sessionId)}
-                    onChange={(e) => setSessionId(Number(e.target.value) || 0)}
-                    className="w-full px-4 py-3 rounded-xl bg-white border-2 border-gray-200 focus:outline-none focus:border-purple-400 focus:ring-4 focus:ring-purple-100 text-sm font-mono"
-                  />
-                </div>
-
-                <div className="p-3 bg-blue-50 border-2 border-blue-200 rounded-xl">
-                  <p className="text-xs font-semibold text-blue-800">
-                    ℹ️ Prepare Codemaker auth entry, then any other connected wallet can import as Codebreaker.
-                  </p>
-                </div>
-              </div>
-
-              <div className="pt-5 border-t-2 border-gray-100 space-y-5">
-                {!preparedAuthCode ? (
-                  <button
-                    onClick={handlePrepareAuthCode}
-                    disabled={loading || quickstartLoading}
-                    className="w-full py-4 rounded-xl font-bold text-white text-sm bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 disabled:from-gray-200 disabled:to-gray-300 disabled:text-gray-500 transition-all shadow-lg hover:shadow-xl transform hover:scale-105 disabled:transform-none"
-                  >
-                    {loading ? 'Preparing...' : 'Prepare & Export Auth Entry'}
-                  </button>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="p-4 bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl">
-                      <p className="text-xs font-bold uppercase tracking-wide text-green-700 mb-2">
-                        Auth Entry XDR (Player 1 Signed)
-                      </p>
-                      <div className="bg-white p-3 rounded-lg border border-green-200 mb-3">
-                        <code className="text-xs font-mono text-gray-700 break-all">{preparedAuthCode}</code>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <button
-                          onClick={copyAuthCode}
-                          className="py-3 rounded-lg bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white font-bold text-sm transition-all shadow-md hover:shadow-lg transform hover:scale-105"
-                        >
-                          {authCodeCopied ? '✓ Copied!' : '📋 Copy Auth Entry'}
-                        </button>
-                        <button
-                          onClick={copyShareUrlWithAuthCode}
-                          className="py-3 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white font-bold text-sm transition-all shadow-md hover:shadow-lg transform hover:scale-105"
-                        >
-                          {shareUrlCopied ? '✓ Copied!' : '🔗 Share URL'}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {authMode === 'import' && (
-            <div className="space-y-5">
-              <div className="p-5 bg-gradient-to-br from-blue-50 to-cyan-50 border-2 border-blue-200 rounded-xl">
-                <p className="text-sm font-semibold text-blue-800 mb-2">📥 Import Auth Entry from Codemaker</p>
-                <p className="text-xs text-gray-700 mb-4">
-                  Paste auth code and sign as the currently connected wallet (Codebreaker).
-                </p>
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs font-bold text-gray-700 mb-1">Auth Entry XDR</label>
-                    <textarea
-                      rows={5}
-                      value={importAuthCode}
-                      onChange={(e) => setImportAuthCode(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl bg-white border-2 border-blue-200 focus:outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100 text-xs font-mono resize-none"
-                    />
-                  </div>
-                  {parsedAuthInfo && (
-                    <div className="p-3 rounded-xl bg-white border-2 border-blue-200 text-xs">
-                      <p><span className="font-bold">Codemaker (fixed):</span> <span className="font-mono">{parsedAuthInfo.player1}</span></p>
-                      <p><span className="font-bold">Session:</span> <span className="font-mono">{parsedAuthInfo.sessionId}</span></p>
-                      <p><span className="font-bold">Codemaker points:</span> <span className="font-mono">{parsedAuthInfo.player1Points}</span></p>
-                    </div>
-                  )}
-                  {authParseError && (
-                    <p className="text-xs text-red-600 font-semibold">{authParseError}</p>
-                  )}
-                </div>
-              </div>
-
-              <button
-                onClick={handleImportAndStart}
-                disabled={loading || quickstartLoading || !importAuthCode.trim() || !!authParseError}
-                className="w-full py-4 rounded-xl font-bold text-white text-lg bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-500 hover:from-blue-600 hover:via-cyan-600 hover:to-teal-600 disabled:from-gray-200 disabled:to-gray-300 disabled:text-gray-500 transition-all shadow-xl hover:shadow-2xl transform hover:scale-105 disabled:transform-none"
-              >
-                {loading ? 'Importing & Signing...' : 'Import & Sign Auth Entry'}
-              </button>
-            </div>
-          )}
-
-          {authMode === 'load' && (
-            <div className="space-y-5">
-              <div className="p-5 bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl">
-                <p className="text-sm font-semibold text-green-800 mb-2">🎮 Load Existing Game by Session ID</p>
-                <p className="text-xs text-gray-700 mb-4">
-                  Enter a session ID to load and continue an existing game.
-                </p>
-                <input
-                  value={loadSessionInput}
-                  onChange={(e) => setLoadSessionInput(e.target.value)}
-                  placeholder="Enter session ID"
-                  className="w-full px-4 py-3 rounded-xl bg-white border-2 border-green-200 focus:outline-none focus:border-green-400 focus:ring-4 focus:ring-green-100 text-sm font-mono"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <button
-                  onClick={handleLoadSession}
-                  disabled={loading || quickstartLoading || !loadSessionInput.trim()}
-                  className="py-4 rounded-xl font-bold text-white text-lg bg-gradient-to-r from-green-500 via-emerald-500 to-teal-500 hover:from-green-600 hover:via-emerald-600 hover:to-teal-600 disabled:from-gray-200 disabled:to-gray-300 disabled:text-gray-500 transition-all shadow-xl hover:shadow-2xl transform hover:scale-105 disabled:transform-none"
-                >
-                  {loading ? 'Loading...' : '🎮 Load Game'}
-                </button>
-                <button
-                  onClick={copyShareUrlWithSession}
-                  disabled={!loadSessionInput.trim()}
-                  className="py-4 rounded-xl font-bold text-white text-lg bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 disabled:from-gray-200 disabled:to-gray-300 disabled:text-gray-500 transition-all shadow-xl hover:shadow-2xl transform hover:scale-105 disabled:transform-none"
-                >
-                  {shareUrlCopied ? '✓ Copied!' : '🔗 Share Game'}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {phase === 'game' && (
-        <div className="grid gap-4">
-          {game?.ended ? (
-            <div className="p-4 bg-gradient-to-r from-indigo-50 to-purple-50 border-2 border-indigo-200 rounded-xl">
-              <p className="text-sm font-bold text-indigo-900">Game Ended</p>
-              <p className="text-sm text-indigo-800 mt-1">
-                Winner: <span className="font-mono">{winnerLabel || 'Unknown'}</span>
-              </p>
-              <p className="text-sm text-indigo-800">
-                Attempts used: <span className="font-mono">{String(game.attempts_used)}</span> / <span className="font-mono">{String(game.max_attempts)}</span>
-              </p>
-              <div className="mt-3">
-                <button disabled={loading || quickstartLoading} onClick={handleBackToAuth}>Back To Auth</button>
-              </div>
+              {walletError && <p className="text-sm text-red-700 font-semibold mt-3">{walletError}</p>}
             </div>
           ) : (
             <>
-              <div className="p-4 rounded-xl border-2 border-gray-200 bg-white grid gap-3">
-                <div className="grid sm:grid-cols-[120px_1fr] items-center gap-2">
-                  <label className="text-xs font-bold text-gray-600">Session ID</label>
-                  <input value={String(sessionId)} readOnly className="text-xs font-mono px-2 py-1 rounded border border-gray-300 bg-gray-50 max-w-[220px]" />
-                </div>
-
-                <div className="grid sm:grid-cols-[120px_1fr] items-start gap-2">
-                  <label className="text-xs font-bold text-gray-600 pt-1">Color Legend</label>
-                  <div className="grid sm:grid-cols-2 gap-2">
-                    <div className="flex items-center gap-2 text-sm">{renderColorPeg(1, 'h-4 w-4')}<span>Red</span></div>
-                    <div className="flex items-center gap-2 text-sm">{renderColorPeg(2, 'h-4 w-4')}<span>Blue</span></div>
-                    <div className="flex items-center gap-2 text-sm">{renderColorPeg(3, 'h-4 w-4')}<span>Green</span></div>
-                    <div className="flex items-center gap-2 text-sm">{renderColorPeg(4, 'h-4 w-4')}<span>Yellow</span></div>
-                    <div className="flex items-center gap-2 text-sm">{renderColorPeg(5, 'h-4 w-4')}<span>Orange</span></div>
-                    <div className="flex items-center gap-2 text-sm">{renderColorPeg(6, 'h-4 w-4')}<span>Purple</span></div>
-                  </div>
-                </div>
-
-                <div className="grid sm:grid-cols-[120px_1fr] items-start gap-2">
-                  <label className="text-xs font-bold text-gray-600 pt-1">Feedback</label>
-                  <div className="grid sm:grid-cols-2 gap-2">
-                    <div className="flex items-center gap-2 text-sm"><span className="h-4 w-4 rounded-full bg-black border border-black inline-block" /><span>Black Peg (exact)</span></div>
-                    <div className="flex items-center gap-2 text-sm"><span className="h-4 w-4 rounded-full bg-white border border-gray-400 inline-block" /><span>White Peg (partial)</span></div>
-                  </div>
-                </div>
+              <div className="pixel-tab-row">
+                <button
+                  onClick={() => setAuthMode('create')}
+                  disabled={loading || quickstartLoading}
+                  className={`pixel-tab ${authMode === 'create' ? 'active' : ''}`}
+                >
+                  CREATE
+                </button>
+                <button
+                  onClick={() => setAuthMode('import')}
+                  disabled={loading || quickstartLoading}
+                  className={`pixel-tab ${authMode === 'import' ? 'active' : ''}`}
+                >
+                  IMPORT
+                </button>
+                <button
+                  onClick={() => setAuthMode('load')}
+                  disabled={loading || quickstartLoading}
+                  className={`pixel-tab ${authMode === 'load' ? 'active' : ''}`}
+                >
+                  LOAD
+                </button>
               </div>
 
-              <div className="grid md:grid-cols-2 gap-4">
-                {isPlayer1 && (
-                  <div className="p-4 rounded-xl border-2 border-purple-200 bg-purple-50 grid gap-2">
-                    <label className="text-sm font-semibold text-purple-900">Salt (0x + 32 hex chars)</label>
-                    <input
-                      value={saltInput}
-                      onChange={(e) => setSaltInput(e.target.value)}
-                      disabled={!!game?.commitment}
-                      className="text-xs font-mono px-2 py-1 rounded border border-purple-300"
-                    />
-                    <label className="text-sm font-semibold text-purple-900">Codemaker Secret (click colors)</label>
-                    <div className="flex gap-2 mb-2">
-                      {secretDigits.map((d, idx) => (
-                        <div key={`secret-selected-${idx}`}>{renderColorPeg(d, 'h-8 w-8')}</div>
+              <div className="pixel-panel">
+                <p className="pixel-panel-title">DEV QUICKSTART</p>
+                <p className="mb-3">Creates and signs both local players in one move.</p>
+                <button className="pixel-btn" onClick={handleQuickStart} disabled={loading || quickstartLoading}>
+                  {quickstartLoading ? 'QUICKSTARTING...' : 'QUICKSTART MATCH'}
+                </button>
+              </div>
+
+              {authMode === 'create' && (
+                <div className="pixel-panel grid gap-4">
+                  <label className="text-sm font-semibold">Session ID</label>
+                  <input
+                    value={String(sessionId)}
+                    onChange={(e) => setSessionId(Number(e.target.value) || 0)}
+                    className="pixel-input font-mono"
+                  />
+                  {!preparedAuthCode ? (
+                    <button onClick={handlePrepareAuthCode} disabled={loading || quickstartLoading} className="pixel-btn">
+                      {loading ? 'PREPARING...' : 'PREPARE AUTH ENTRY'}
+                    </button>
+                  ) : (
+                    <div className="grid gap-3">
+                      <div className="pixel-codebox">
+                        <code>{preparedAuthCode}</code>
+                      </div>
+                      <div className="flex flex-wrap gap-3">
+                        <button onClick={copyAuthCode} className="pixel-btn pixel-btn-alt">
+                          {authCodeCopied ? 'COPIED' : 'COPY AUTH'}
+                        </button>
+                        <button onClick={copyShareUrlWithAuthCode} className="pixel-btn pixel-btn-alt">
+                          {shareUrlCopied ? 'COPIED' : 'COPY SHARE URL'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {authMode === 'import' && (
+                <div className="pixel-panel grid gap-4">
+                  <p className="pixel-panel-title">IMPORT AUTH ENTRY</p>
+                  <textarea
+                    rows={5}
+                    value={importAuthCode}
+                    onChange={(e) => setImportAuthCode(e.target.value)}
+                    className="pixel-input font-mono resize-none"
+                  />
+                  {parsedAuthInfo && (
+                    <div className="pixel-codebox text-xs">
+                      <p>Codemaker: {parsedAuthInfo.player1}</p>
+                      <p>Session: {parsedAuthInfo.sessionId}</p>
+                      <p>Codemaker points: {parsedAuthInfo.player1Points}</p>
+                    </div>
+                  )}
+                  {authParseError && <p className="text-sm text-red-700 font-semibold">{authParseError}</p>}
+                  <button
+                    onClick={handleImportAndStart}
+                    disabled={loading || quickstartLoading || !importAuthCode.trim() || !!authParseError}
+                    className="pixel-btn"
+                  >
+                    {loading ? 'IMPORTING...' : 'IMPORT AND START'}
+                  </button>
+                </div>
+              )}
+
+              {authMode === 'load' && (
+                <div className="pixel-panel grid gap-4">
+                  <p className="pixel-panel-title">LOAD SESSION</p>
+                  <input
+                    value={loadSessionInput}
+                    onChange={(e) => setLoadSessionInput(e.target.value)}
+                    placeholder="Enter session ID"
+                    className="pixel-input font-mono"
+                  />
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      onClick={handleLoadSession}
+                      disabled={loading || quickstartLoading || !loadSessionInput.trim()}
+                      className="pixel-btn"
+                    >
+                      {loading ? 'LOADING...' : 'LOAD GAME'}
+                    </button>
+                    <button onClick={copyShareUrlWithSession} disabled={!loadSessionInput.trim()} className="pixel-btn pixel-btn-alt">
+                      {shareUrlCopied ? 'COPIED' : 'COPY SHARE URL'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      )}
+
+      {phase === 'game' && (
+        <section className="grid gap-4">
+          {game?.ended ? (
+            <div className="pixel-panel">
+              <p className="pixel-panel-title">MATCH ENDED</p>
+              <p>Winner: {winnerLabel || 'Unknown'}</p>
+              <p>Attempts: {String(game.attempts_used)} / {String(game.max_attempts)}</p>
+              <button disabled={loading || quickstartLoading} onClick={handleBackToAuth} className="pixel-btn mt-3">BACK TO AUTH</button>
+            </div>
+          ) : (
+            <>
+              <div className="pixel-board-meta">
+                <p>You are {isPlayer1 ? 'Codemaker' : isPlayer2 ? 'Codebreaker' : 'Not in session'}</p>
+                <p>Commitment: {hasCommitment ? 'LOCKED' : 'PENDING'}</p>
+              </div>
+
+              <div className="grid lg:grid-cols-2 gap-4">
+                <div className="pixel-panel">
+                  <p className="pixel-panel-title">ACTION DECK</p>
+                  <div className="flex flex-wrap gap-2 mb-4">
+                    <button disabled={loading || quickstartLoading || !canCommit} onClick={handleCommit} className="pixel-btn">1 COMMIT</button>
+                    <button disabled={loading || quickstartLoading || !canGuess} onClick={handleGuess} className="pixel-btn">2 GUESS</button>
+                    <button disabled={loading || quickstartLoading || !canFeedback} onClick={handleFeedbackProof} className="pixel-btn">3 PROVE</button>
+                  </div>
+
+                  {isPlayer1 && (
+                    <div className="grid gap-3">
+                      <label className="text-sm font-semibold">Salt (0x + 32 hex chars)</label>
+                      <input
+                        value={saltInput}
+                        onChange={(e) => setSaltInput(e.target.value)}
+                        disabled={!!game?.commitment}
+                        className="pixel-input font-mono"
+                      />
+                      <label className="text-sm font-semibold">Codemaker Secret</label>
+                      <div className="flex gap-2 mb-2">
+                        {secretDigits.map((d, idx) => (
+                          <div key={`secret-selected-${idx}`}>{renderColorPeg(d, 'h-8 w-8')}</div>
+                        ))}
+                      </div>
+                      {[0, 1, 2, 3].map((idx) => (
+                        <div key={`secret-slot-${idx}`} className="grid grid-cols-[60px_1fr] items-center gap-2">
+                          <span className="text-xs">Slot {idx + 1}</span>
+                          <div className="flex flex-wrap gap-2">
+                            {[1, 2, 3, 4, 5, 6].map((value) => (
+                              <button
+                                key={`secret-${idx}-${value}`}
+                                type="button"
+                                disabled={!!game?.commitment}
+                                onClick={() => setSecretDigits((prev) => setGuessDigitAt(prev, idx, value))}
+                                className={`peg-picker ${secretDigits[idx] === value ? 'active' : ''}`}
+                                title={`${value} ${PEG_COLOR_META[value].label}`}
+                              >
+                                {renderColorPeg(value, 'h-6 w-6')}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                       ))}
                     </div>
-                    {[0, 1, 2, 3].map((idx) => (
-                      <div key={`secret-slot-${idx}`} className="grid grid-cols-[62px_1fr] items-center gap-2">
-                        <span className="text-xs font-semibold text-purple-700">Slot {idx + 1}</span>
-                        <div className="flex flex-wrap gap-1.5">
-                          {[1, 2, 3, 4, 5, 6].map((value) => (
-                            <button
-                              key={`secret-${idx}-${value}`}
-                              type="button"
-                              disabled={!!game?.commitment}
-                              onClick={() => setSecretDigits((prev) => setGuessDigitAt(prev, idx, value))}
-                              className={`p-0.5 rounded-full border-2 ${secretDigits[idx] === value ? 'border-purple-700' : 'border-transparent'} disabled:opacity-50`}
-                              title={`${value} ${PEG_COLOR_META[value].label}`}
-                            >
-                              {renderColorPeg(value, 'h-6 w-6')}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                  )}
 
-                {isPlayer2 && (
-                  <div className="p-4 rounded-xl border-2 border-blue-200 bg-blue-50 grid gap-2">
-                    <label className="text-sm font-semibold text-blue-900">Codebreaker Guess (click colors)</label>
-                    <div className="flex gap-2 mb-2">
-                      {guessDigits.map((d, idx) => (
-                        <div key={`guess-selected-${idx}`}>{renderColorPeg(d, 'h-8 w-8')}</div>
+                  {isPlayer2 && (
+                    <div className="grid gap-3">
+                      <label className="text-sm font-semibold">Codebreaker Guess</label>
+                      <div className="flex gap-2 mb-2">
+                        {guessDigits.map((d, idx) => (
+                          <div key={`guess-selected-${idx}`}>{renderColorPeg(d, 'h-8 w-8')}</div>
+                        ))}
+                      </div>
+                      {[0, 1, 2, 3].map((idx) => (
+                        <div key={`guess-slot-${idx}`} className="grid grid-cols-[60px_1fr] items-center gap-2">
+                          <span className="text-xs">Slot {idx + 1}</span>
+                          <div className="flex flex-wrap gap-2">
+                            {[1, 2, 3, 4, 5, 6].map((value) => (
+                              <button
+                                key={`guess-${idx}-${value}`}
+                                type="button"
+                                onClick={() => setGuessDigits((prev) => setGuessDigitAt(prev, idx, value))}
+                                className={`peg-picker ${guessDigits[idx] === value ? 'active' : ''}`}
+                                title={`${value} ${PEG_COLOR_META[value].label}`}
+                              >
+                                {renderColorPeg(value, 'h-6 w-6')}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                       ))}
                     </div>
-                    {[0, 1, 2, 3].map((idx) => (
-                      <div key={`guess-slot-${idx}`} className="grid grid-cols-[62px_1fr] items-center gap-2">
-                        <span className="text-xs font-semibold text-blue-700">Slot {idx + 1}</span>
-                        <div className="flex flex-wrap gap-1.5">
-                          {[1, 2, 3, 4, 5, 6].map((value) => (
-                            <button
-                              key={`guess-${idx}-${value}`}
-                              type="button"
-                              onClick={() => setGuessDigits((prev) => setGuessDigitAt(prev, idx, value))}
-                              className={`p-0.5 rounded-full border-2 ${guessDigits[idx] === value ? 'border-blue-700' : 'border-transparent'}`}
-                              title={`${value} ${PEG_COLOR_META[value].label}`}
-                            >
-                              {renderColorPeg(value, 'h-6 w-6')}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+                  )}
+                </div>
 
-              <div className="flex flex-wrap gap-2">
-                <button disabled={loading || quickstartLoading || !canCommit} onClick={handleCommit}>1) commit_code (Codemaker)</button>
-                <button disabled={loading || quickstartLoading || !canGuess} onClick={handleGuess}>2) submit_guess (Codebreaker)</button>
-                <button disabled={loading || quickstartLoading || !canFeedback} onClick={handleFeedbackProof}>3) submit_feedback_proof (Codemaker+zk)</button>
-              </div>
-
-              {guessHistory.length > 0 && (
-                <div className="p-4 bg-white border-2 border-gray-200 rounded-xl">
-                  <p className="text-sm font-bold text-gray-800 mb-3">Mastermind Board</p>
+                <div className="pixel-board">
+                  <p className="pixel-panel-title">MASTER BOARD</p>
                   <div className="grid gap-2">
                     {[...guessHistory].reverse().map((row) => {
                       const fbPegs = renderFeedbackPegs(row.exact, row.partial);
                       return (
-                        <div key={row.guessId} className="grid grid-cols-[56px_1fr_84px] items-center gap-3 p-2 rounded border border-gray-100">
-                          <div className="text-xs font-mono text-gray-600">#{row.guessId}</div>
+                        <div key={row.guessId} className="pixel-row">
+                          <div className="text-xs font-mono">#{row.guessId}</div>
                           <div className="flex gap-2">
                             {row.guessDigits
                               ? row.guessDigits.map((d, i) => <div key={`${row.guessId}-g-${i}`}>{renderColorPeg(d)}</div>)
-                              : <span className="text-xs text-gray-500">{row.guess}</span>}
+                              : <span className="text-xs">{row.guess}</span>}
                           </div>
                           <div className="grid grid-cols-2 gap-1 justify-items-center">
                             {fbPegs.map((p, i) => (
                               <div
                                 key={`${row.guessId}-fb-${i}`}
-                                className={`h-3.5 w-3.5 rounded-full border ${
-                                  p === 'black'
-                                    ? 'bg-black border-black'
-                                    : p === 'white'
-                                      ? 'bg-white border-gray-400'
-                                      : 'bg-gray-200 border-gray-200'
-                                }`}
+                                className={`feedback-peg ${p}`}
                                 title={p === 'black' ? 'exact' : p === 'white' ? 'partial' : 'empty'}
                               />
                             ))}
@@ -1394,17 +1337,21 @@ export function MyGameGame({
                     })}
                   </div>
                   {latestFeedback && (
-                    <p className="text-xs text-gray-600 mt-3">
+                    <p className="text-xs mt-3">
                       Latest feedback: exact={String(latestFeedback.exact)}, partial={String(latestFeedback.partial)}
                     </p>
                   )}
+                  {pendingGuessDigits && (
+                    <p className="text-xs mt-2">
+                      Pending guess: {pendingGuessDigits.join(',')}
+                    </p>
+                  )}
                 </div>
-              )}
+              </div>
             </>
           )}
-        </div>
+        </section>
       )}
-
     </div>
   );
 }
