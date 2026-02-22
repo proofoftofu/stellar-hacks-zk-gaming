@@ -101,7 +101,7 @@ export class MyGameService {
       DEFAULT_METHOD_OPTIONS.timeoutInSeconds,
       validUntilLedgerSeq
     );
-    return sentTx.result;
+    return sentTx;
   }
 
   /**

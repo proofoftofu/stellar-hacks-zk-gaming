@@ -40,6 +40,7 @@ type StoredSecretState = {
 type AuthMode = 'create' | 'import' | 'load';
 type UiPhase = 'auth' | 'game';
 const SECRET_STATE_KEY = 'my-game:latest-player1-secret';
+const STELLAR_EXPERT_TX_BASE = 'https://stellar.expert/explorer/testnet/tx/';
 const PEG_COLOR_META: Record<number, { label: string; bg: string }> = {
   1: { label: 'Red', bg: 'bg-red-500' },
   2: { label: 'Blue', bg: 'bg-blue-500' },
@@ -85,6 +86,20 @@ function chooseProgressedState(prev: Game | null, next: Game): Game {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractTxHash(submission: any): string | null {
+  return (
+    submission?.sendTransactionResponse?.hash ||
+    submission?.getTransactionResponse?.hash ||
+    submission?.getTransactionResponse?.txHash ||
+    submission?.hash ||
+    null
+  );
+}
+
+function txUrl(hash: string | null): string {
+  return hash ? `${STELLAR_EXPERT_TX_BASE}${hash}` : '';
 }
 
 function parseCsvSalt16(input: string): Salt16 {
@@ -275,6 +290,7 @@ export function MyGameGame({
   const [game, setGame] = useState<Game | null>(null);
   const [loading, setLoading] = useState(false);
   const [quickstartLoading, setQuickstartLoading] = useState(false);
+  const [isAwaitingConfirmation, setIsAwaitingConfirmation] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [secretRecoveryError, setSecretRecoveryError] = useState('');
@@ -427,7 +443,6 @@ export function MyGameGame({
     while (Date.now() - started <= timeoutMs) {
       try {
         const latest = await fetchLatestGame();
-        setGame((prev) => chooseProgressedState(prev, latest));
         if (predicate(latest)) {
           return latest;
         }
@@ -447,6 +462,7 @@ export function MyGameGame({
     const poll = async () => {
       if (stopped) return;
       if (!userAddress) return;
+      if (isAwaitingConfirmation) return;
       const pollId = ++latestPollId;
       try {
         if (phase === 'auth') {
@@ -490,7 +506,7 @@ export function MyGameGame({
       stopped = true;
       if (timer) clearInterval(timer);
     };
-  }, [phase, userAddress, loadSessionInput, sessionId]);
+  }, [phase, userAddress, loadSessionInput, sessionId, isAwaitingConfirmation]);
 
   const handlePrepareAuthCode = () => run(async () => {
     console.log('[my-game-ui] prepare auth code', { sessionId, userAddress });
@@ -535,18 +551,39 @@ export function MyGameGame({
       stake,
       signer,
     );
-    setMessage('Codebreaker start-game transaction sent. Waiting for confirmation...');
-    await myGameService.finalizeStartGame(fullTxXdr, userAddress, signer);
-    await waitForGameCondition(
-      (next) =>
-        next.player1 === parsed.player1 &&
-        next.player2 === userAddress
-    );
+    let submittedHash: string | null = null;
+    setIsAwaitingConfirmation(true);
+    try {
+      const submitted = await myGameService.finalizeStartGame(fullTxXdr, userAddress, signer);
+      submittedHash = extractTxHash(submitted);
+      const submittedUrl = txUrl(submittedHash);
+      setMessage(
+        submittedUrl
+          ? `Codebreaker start-game transaction sent. Waiting for confirmation.\n${submittedUrl}`
+          : 'Codebreaker start-game transaction sent. Waiting for confirmation...'
+      );
+      await waitForGameCondition(
+        (next) =>
+          next.player1 === parsed.player1 &&
+          next.player2 === userAddress
+      );
+    } finally {
+      setIsAwaitingConfirmation(false);
+    }
 
     console.log('[my-game-ui] start_game submitted from imported auth entry');
-    setMessage('Codebreaker start-game transaction confirmed. Loading game...');
+    const confirmedUrl = txUrl(submittedHash);
+    setMessage(
+      confirmedUrl
+        ? `Codebreaker start-game transaction confirmed. Loading game.\n${confirmedUrl}`
+        : 'Codebreaker start-game transaction confirmed. Loading game...'
+    );
     await loadGame(parsed.sessionId);
-    setMessage('Transaction confirmed. Waiting for Codemaker secret commitment.');
+    setMessage(
+      confirmedUrl
+        ? `Transaction confirmed. Waiting for Codemaker secret commitment.\n${confirmedUrl}`
+        : 'Transaction confirmed. Waiting for Codemaker secret commitment.'
+    );
   });
 
   const handleLoadSession = () => run(async () => {
@@ -622,13 +659,30 @@ export function MyGameGame({
         });
       }
 
-      await tx.signAndSend();
-      console.log('[my-game-ui][tx] sent start_game', { sessionId: sid });
-      setMessage('Quickstart transaction sent. Waiting for confirmation...');
-      await waitForGameCondition((g) => g.player1 === p1 && g.player2 === p2);
+      setIsAwaitingConfirmation(true);
+      let submittedHash: string | null = null;
+      try {
+        const submitted = await tx.signAndSend();
+        submittedHash = extractTxHash(submitted);
+        console.log('[my-game-ui][tx] sent start_game', { sessionId: sid });
+        const submittedUrl = txUrl(submittedHash);
+        setMessage(
+          submittedUrl
+            ? `Quickstart transaction sent. Waiting for confirmation.\n${submittedUrl}`
+            : 'Quickstart transaction sent. Waiting for confirmation...'
+        );
+        await waitForGameCondition((g) => g.player1 === p1 && g.player2 === p2);
+      } finally {
+        setIsAwaitingConfirmation(false);
+      }
       await switchLocalWallet(0);
       await loadGame(sid);
-      setMessage(`Transaction confirmed. Session ${sid} is ready. Waiting for Codemaker secret commitment.`);
+      const confirmedUrl = txUrl(submittedHash);
+      setMessage(
+        confirmedUrl
+          ? `Transaction confirmed. Session ${sid} is ready. Waiting for Codemaker secret commitment.\n${confirmedUrl}`
+          : `Transaction confirmed. Session ${sid} is ready. Waiting for Codemaker secret commitment.`
+      );
       console.log('[my-game-ui] quickstart completed', sid);
     } catch (e) {
       setError(String(e));
@@ -664,13 +718,30 @@ export function MyGameGame({
     });
     logTxCreated(`commit_code(session_id=${sessionId})`, tx);
     const before = await fetchLatestGame();
-    await tx.signAndSend();
-    console.log('[my-game-ui][tx] sent commit_code', { sessionId });
-    setMessage('Codemaker transaction sent. Waiting for confirmation...');
-    await waitForGameCondition((next) => !hasOptionValue(before.commitment) && hasOptionValue(next.commitment));
+    setIsAwaitingConfirmation(true);
+    let submittedHash: string | null = null;
+    try {
+      const submitted = await tx.signAndSend();
+      submittedHash = extractTxHash(submitted);
+      console.log('[my-game-ui][tx] sent commit_code', { sessionId });
+      const submittedUrl = txUrl(submittedHash);
+      setMessage(
+        submittedUrl
+          ? `Codemaker transaction sent. Waiting for confirmation.\n${submittedUrl}`
+          : 'Codemaker transaction sent. Waiting for confirmation...'
+      );
+      await waitForGameCondition((next) => !hasOptionValue(before.commitment) && hasOptionValue(next.commitment));
+    } finally {
+      setIsAwaitingConfirmation(false);
+    }
     await loadGame(sessionId);
     setSecretRecoveryError('');
-    setMessage('Codemaker transaction confirmed. Waiting for Codebreaker guess.');
+    const confirmedUrl = txUrl(submittedHash);
+    setMessage(
+      confirmedUrl
+        ? `Codemaker transaction confirmed. Waiting for Codebreaker guess.\n${confirmedUrl}`
+        : 'Codemaker transaction confirmed. Waiting for Codebreaker guess.'
+    );
   });
 
   const handleGuess = () => run(async () => {
@@ -689,30 +760,64 @@ export function MyGameGame({
     });
     logTxCreated(`submit_guess(session_id=${sessionId})`, tx);
     const before = await fetchLatestGame();
-    await tx.signAndSend();
-    console.log('[my-game-ui][tx] sent submit_guess', { sessionId, guess });
-    setMessage('Codebreaker transaction sent. Waiting for confirmation...');
-    await waitForGameCondition(
-      (next) =>
-        next.guesses.length > before.guesses.length &&
-        hasOptionValue(next.pending_guess_id)
-    );
+    setIsAwaitingConfirmation(true);
+    let submittedHash: string | null = null;
+    try {
+      const submitted = await tx.signAndSend();
+      submittedHash = extractTxHash(submitted);
+      console.log('[my-game-ui][tx] sent submit_guess', { sessionId, guess });
+      const submittedUrl = txUrl(submittedHash);
+      setMessage(
+        submittedUrl
+          ? `Codebreaker transaction sent. Waiting for confirmation.\n${submittedUrl}`
+          : 'Codebreaker transaction sent. Waiting for confirmation...'
+      );
+      await waitForGameCondition(
+        (next) =>
+          next.guesses.length > before.guesses.length &&
+          hasOptionValue(next.pending_guess_id)
+      );
+    } finally {
+      setIsAwaitingConfirmation(false);
+    }
     await loadGame(sessionId);
-    setMessage('Codebreaker transaction confirmed. Waiting for Codemaker feedback proof.');
+    const confirmedUrl = txUrl(submittedHash);
+    setMessage(
+      confirmedUrl
+        ? `Codebreaker transaction confirmed. Waiting for Codemaker feedback proof.\n${confirmedUrl}`
+        : 'Codebreaker transaction confirmed. Waiting for Codemaker feedback proof.'
+    );
   });
 
   const handleFeedbackProof = () => run(async () => {
     console.log('[my-game-ui] feedback+proof', { sessionId });
     setMessage('Codemaker proof initiated. Preparing transaction...');
-    const latestGame = await fetchLatestGame();
+    let latestGame = await fetchLatestGame();
     setGame(latestGame);
     if (userAddress !== latestGame.player1) throw new Error(`Only Codemaker can submit feedback proof. Expected ${latestGame.player1}`);
-    if (latestGame.pending_guess_id === undefined || latestGame.pending_guess_id === null) {
+
+    if (!hasOptionValue(latestGame.pending_guess_id)) {
+      setMessage('Codemaker proof initiated. Waiting for pending guess confirmation...');
+      latestGame = await waitForGameCondition((next) => hasOptionValue(next.pending_guess_id), 45_000, 1_500);
+      setGame((prev) => chooseProgressedState(prev, latestGame));
+    }
+
+    if (!hasOptionValue(latestGame.pending_guess_id)) {
       throw new Error('No pending guess to prove feedback for');
     }
 
     const pendingGuessId = Number(latestGame.pending_guess_id);
-    const guessRecord = latestGame.guesses.find((g: { guess_id: number | bigint; guess: Buffer }) => Number(g.guess_id) === pendingGuessId);
+    let guessRecord = latestGame.guesses.find((g: { guess_id: number | bigint; guess: Buffer }) => Number(g.guess_id) === pendingGuessId);
+    if (!guessRecord) {
+      setMessage('Codemaker proof initiated. Waiting for pending guess record...');
+      latestGame = await waitForGameCondition(
+        (next) => next.guesses.some((g: { guess_id: number | bigint }) => Number(g.guess_id) === pendingGuessId),
+        45_000,
+        1_500
+      );
+      setGame((prev) => chooseProgressedState(prev, latestGame));
+      guessRecord = latestGame.guesses.find((g: { guess_id: number | bigint; guess: Buffer }) => Number(g.guess_id) === pendingGuessId);
+    }
     if (!guessRecord) throw new Error(`Missing guess record for guess_id ${pendingGuessId}`);
 
     const secret = secretDigits;
@@ -742,24 +847,42 @@ export function MyGameGame({
     });
     logTxCreated(`submit_feedback_proof(session_id=${sessionId}, guess_id=${pendingGuessId})`, tx);
     const before = await fetchLatestGame();
-    await tx.signAndSend();
-    console.log('[my-game-ui][tx] sent submit_feedback_proof', {
-      sessionId,
-      guessId: pendingGuessId,
-      exact: fb.exact,
-      partial: fb.partial,
-    });
-    setMessage('Codemaker proof transaction sent. Waiting for confirmation...');
-    const confirmed = await waitForGameCondition(
-      (next) =>
-        next.feedbacks.length > before.feedbacks.length ||
-        next.ended
-    );
+    setIsAwaitingConfirmation(true);
+    let confirmed: Game;
+    let submittedHash: string | null = null;
+    try {
+      const submitted = await tx.signAndSend();
+      submittedHash = extractTxHash(submitted);
+      console.log('[my-game-ui][tx] sent submit_feedback_proof', {
+        sessionId,
+        guessId: pendingGuessId,
+        exact: fb.exact,
+        partial: fb.partial,
+      });
+      const submittedUrl = txUrl(submittedHash);
+      setMessage(
+        submittedUrl
+          ? `Codemaker proof transaction sent. Waiting for confirmation.\n${submittedUrl}`
+          : 'Codemaker proof transaction sent. Waiting for confirmation...'
+      );
+      confirmed = await waitForGameCondition(
+        (next) =>
+          next.feedbacks.length > before.feedbacks.length ||
+          next.ended
+      );
+    } finally {
+      setIsAwaitingConfirmation(false);
+    }
     await loadGame(sessionId);
+    const confirmedUrl = txUrl(submittedHash);
     setMessage(
       confirmed.ended
-        ? 'Codemaker proof transaction confirmed. Game finished.'
-        : 'Codemaker proof transaction confirmed. Waiting for Codebreaker next guess.'
+        ? (confirmedUrl
+          ? `Codemaker proof transaction confirmed. Game finished.\n${confirmedUrl}`
+          : 'Codemaker proof transaction confirmed. Game finished.')
+        : (confirmedUrl
+          ? `Codemaker proof transaction confirmed. Waiting for Codebreaker next guess.\n${confirmedUrl}`
+          : 'Codemaker proof transaction confirmed. Waiting for Codebreaker next guess.')
     );
     onStandingsRefresh();
 
