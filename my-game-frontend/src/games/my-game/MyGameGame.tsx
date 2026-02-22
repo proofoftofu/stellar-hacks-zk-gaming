@@ -4,6 +4,7 @@ import { Keypair, TransactionBuilder, hash } from '@stellar/stellar-sdk';
 import { Client as MyGameClient, type Game } from './bindings';
 import { MyGameService } from './myGameService';
 import { useWallet } from '@/hooks/useWallet';
+import { standaloneWalletService } from '@/services/standaloneWalletService';
 import {
   RPC_URL,
   NETWORK_PASSPHRASE,
@@ -47,6 +48,44 @@ const PEG_COLOR_META: Record<number, { label: string; bg: string }> = {
   5: { label: 'Orange', bg: 'bg-orange-500' },
   6: { label: 'Purple', bg: 'bg-purple-500' },
 };
+
+function hasOptionValue<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
+}
+
+function isStateRegression(prev: Game, next: Game): boolean {
+  const prevHasCommitment = hasOptionValue(prev.commitment);
+  const nextHasCommitment = hasOptionValue(next.commitment);
+  if (prevHasCommitment && !nextHasCommitment) return true;
+
+  if (next.guesses.length < prev.guesses.length) return true;
+  if (next.feedbacks.length < prev.feedbacks.length) return true;
+  if (Number(next.attempts_used) < Number(prev.attempts_used)) return true;
+  if (Number(next.next_guess_id) < Number(prev.next_guess_id)) return true;
+  if (prev.ended && !next.ended) return true;
+
+  const prevPending = hasOptionValue(prev.pending_guess_id) ? Number(prev.pending_guess_id) : null;
+  const nextPending = hasOptionValue(next.pending_guess_id) ? Number(next.pending_guess_id) : null;
+  if (
+    prevPending !== null &&
+    nextPending === null &&
+    next.feedbacks.length === prev.feedbacks.length
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function chooseProgressedState(prev: Game | null, next: Game): Game {
+  if (!prev) return next;
+  if (isStateRegression(prev, next)) return prev;
+  return next;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function parseCsvSalt16(input: string): Salt16 {
   const raw = input.trim();
@@ -207,7 +246,13 @@ export function MyGameGame({
   onStandingsRefresh,
   onGameComplete,
 }: MyGameGameProps) {
-  const { walletType, getContractSigner } = useWallet();
+  const {
+    isConnected,
+    wallets,
+    connect,
+    switchLocalWallet,
+    getContractSigner,
+  } = useWallet();
 
   const [phase, setPhase] = useState<UiPhase>('auth');
   const [authMode, setAuthMode] = useState<AuthMode>('create');
@@ -236,22 +281,16 @@ export function MyGameGame({
   const [authCodeCopied, setAuthCodeCopied] = useState(false);
   const [shareUrlCopied, setShareUrlCopied] = useState(false);
 
-  const player1Secret = import.meta.env.VITE_DEV_PLAYER1_SECRET || '';
-  const player2Secret = import.meta.env.VITE_DEV_PLAYER2_SECRET || '';
   const allowHttp = RPC_URL.startsWith('http://');
 
   const keypairs = useMemo(() => {
     const map: Record<string, Keypair> = {};
-    if (player1Secret) {
-      const p1 = Keypair.fromSecret(player1Secret);
-      map[p1.publicKey()] = p1;
-    }
-    if (player2Secret) {
-      const p2 = Keypair.fromSecret(player2Secret);
-      map[p2.publicKey()] = p2;
+    for (const wallet of wallets) {
+      const kp = Keypair.fromSecret(wallet.secret);
+      map[kp.publicKey()] = kp;
     }
     return map;
-  }, [player1Secret, player2Secret]);
+  }, [wallets]);
 
   const myGameService = useMemo(() => new MyGameService(MY_GAME_CONTRACT), []);
 
@@ -363,7 +402,7 @@ export function MyGameGame({
     }
 
     setSessionId(target);
-    setGame(g);
+    setGame((prev) => chooseProgressedState(prev, g));
     setPhase('game');
     console.log('[my-game-ui] game loaded', g);
   };
@@ -379,21 +418,46 @@ export function MyGameGame({
     return sim.result.unwrap();
   };
 
+  const waitForGameCondition = async (
+    predicate: (next: Game) => boolean,
+    timeoutMs: number = 90_000,
+    intervalMs: number = 2_000
+  ): Promise<Game> => {
+    const started = Date.now();
+    while (Date.now() - started <= timeoutMs) {
+      try {
+        const latest = await fetchLatestGame();
+        setGame((prev) => chooseProgressedState(prev, latest));
+        if (predicate(latest)) {
+          return latest;
+        }
+      } catch {
+        // ignore transient read errors while waiting for confirmation
+      }
+      await sleep(intervalMs);
+    }
+    throw new Error('Transaction submitted but confirmation timed out. Please refresh game state.');
+  };
+
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
     let stopped = false;
+    let latestPollId = 0;
 
     const poll = async () => {
       if (stopped) return;
       if (!userAddress) return;
+      const pollId = ++latestPollId;
       try {
         if (phase === 'auth') {
           const sid = Number(loadSessionInput.trim() || sessionId);
           if (!Number.isInteger(sid) || sid <= 0) return;
           const reader = createClient(userAddress);
           const tx = await reader.get_game({ session_id: sid });
+          if (stopped || pollId !== latestPollId) return;
           logTxCreated(`poll/get_game(session_id=${sid})`, tx);
           const sim = await tx.simulate();
+          if (stopped || pollId !== latestPollId) return;
           if (sim.result.isOk()) {
             const g = sim.result.unwrap();
             if (g.player1 === userAddress || g.player2 === userAddress) {
@@ -407,10 +471,12 @@ export function MyGameGame({
 
         if (phase === 'game') {
           const latest = await fetchLatestGame();
+          if (stopped || pollId !== latestPollId) return;
           setGame((prev: Game | null) => {
+            const progressed = chooseProgressedState(prev, latest);
             const prevJson = prev ? JSON.stringify(prev, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)) : '';
-            const nextJson = JSON.stringify(latest, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
-            return prevJson === nextJson ? prev : latest;
+            const nextJson = JSON.stringify(progressed, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+            return prevJson === nextJson ? prev : progressed;
           });
         }
       } catch {
@@ -452,6 +518,7 @@ export function MyGameGame({
 
   const handleImportAndStart = () => run(async () => {
     console.log('[my-game-ui] import+start');
+    setMessage('Codebreaker start-game initiated from auth code. Preparing transaction...');
     if (!importAuthCode.trim()) throw new Error('Paste auth code first');
     if (!userAddress) throw new Error('Connect wallet first');
 
@@ -468,11 +535,18 @@ export function MyGameGame({
       stake,
       signer,
     );
+    setMessage('Codebreaker start-game transaction sent. Waiting for confirmation...');
     await myGameService.finalizeStartGame(fullTxXdr, userAddress, signer);
+    await waitForGameCondition(
+      (next) =>
+        next.player1 === parsed.player1 &&
+        next.player2 === userAddress
+    );
 
     console.log('[my-game-ui] start_game submitted from imported auth entry');
+    setMessage('Codebreaker start-game transaction confirmed. Loading game...');
     await loadGame(parsed.sessionId);
-    setMessage('Game started from auth code');
+    setMessage('Transaction confirmed. Waiting for Codemaker secret commitment.');
   });
 
   const handleLoadSession = () => run(async () => {
@@ -490,12 +564,37 @@ export function MyGameGame({
     setMessage('');
     try {
       console.log('[my-game-ui] quickstart begin');
-      const p1 = import.meta.env.VITE_DEV_PLAYER1_ADDRESS || '';
-      const p2 = import.meta.env.VITE_DEV_PLAYER2_ADDRESS || '';
-      if (!p1 || !p2) throw new Error('Missing dev addresses. Run setup:local first.');
+      setMessage('Quickstart initiated. Preparing Codemaker and Codebreaker transaction...');
 
-      const sid = randomSessionId();
-      setSessionId(sid);
+      if (!isConnected) {
+        await connect();
+      }
+
+      let localWallets = wallets;
+      if (localWallets.length < 2) {
+        localWallets = standaloneWalletService.getWallets().wallets;
+      }
+      if (localWallets.length < 2) {
+        throw new Error('Missing local wallets. Connect wallet first.');
+      }
+
+      const p1 = localWallets[0].publicKey; // Wallet 1 = Codemaker
+      const p2 = localWallets[1].publicKey; // Wallet 2 = Codebreaker
+
+      // Ensure both quickstart wallets are funded when balance is missing/low.
+      for (const address of [p1, p2]) {
+        const balanceRaw = await standaloneWalletService.getNativeBalance(address);
+        const balance = balanceRaw ? Number.parseFloat(balanceRaw) : 0;
+        if (!balanceRaw || Number.isNaN(balance) || balance < 100) {
+          console.log('[my-game-ui] funding wallet via friendbot', address);
+          await standaloneWalletService.fundWithFriendbot(address);
+        }
+      }
+
+      const sid = Number.isInteger(sessionId) && sessionId > 0 ? sessionId : randomSessionId();
+      if (sid !== sessionId) {
+        setSessionId(sid);
+      }
 
       const stake = 100_0000000n;
       const client = createClient(p2);
@@ -525,8 +624,11 @@ export function MyGameGame({
 
       await tx.signAndSend();
       console.log('[my-game-ui][tx] sent start_game', { sessionId: sid });
+      setMessage('Quickstart transaction sent. Waiting for confirmation...');
+      await waitForGameCondition((g) => g.player1 === p1 && g.player2 === p2);
+      await switchLocalWallet(0);
       await loadGame(sid);
-      setMessage(`Quickstart ready (session ${sid})`);
+      setMessage(`Transaction confirmed. Session ${sid} is ready. Waiting for Codemaker secret commitment.`);
       console.log('[my-game-ui] quickstart completed', sid);
     } catch (e) {
       setError(String(e));
@@ -538,6 +640,7 @@ export function MyGameGame({
 
   const handleCommit = () => run(async () => {
     console.log('[my-game-ui] commit', { sessionId });
+    setMessage('Codemaker commitment initiated. Preparing transaction...');
     if (!game) throw new Error('Load game first');
     if (userAddress !== game.player1) throw new Error(`Only Codemaker can commit. Expected ${game.player1}`);
 
@@ -560,20 +663,23 @@ export function MyGameGame({
       commitment: commitmentFieldBytes(commitment),
     });
     logTxCreated(`commit_code(session_id=${sessionId})`, tx);
+    const before = await fetchLatestGame();
     await tx.signAndSend();
     console.log('[my-game-ui][tx] sent commit_code', { sessionId });
-
+    setMessage('Codemaker transaction sent. Waiting for confirmation...');
+    await waitForGameCondition((next) => !hasOptionValue(before.commitment) && hasOptionValue(next.commitment));
     await loadGame(sessionId);
     setSecretRecoveryError('');
-    setMessage(`Commitment submitted: ${commitment}`);
+    setMessage('Codemaker transaction confirmed. Waiting for Codebreaker guess.');
   });
 
   const handleGuess = () => run(async () => {
     console.log('[my-game-ui] guess', { sessionId, guessDigits });
+    setMessage('Codebreaker guess initiated. Preparing transaction...');
     if (!game) throw new Error('Load game first');
     if (userAddress !== game.player2) throw new Error(`Only Codebreaker can guess. Expected ${game.player2}`);
     if (!game.commitment) throw new Error('Wait for Codemaker to submit commitment first');
-    if (game.pending_guess_id !== null) throw new Error('Wait for Codemaker feedback before next guess');
+    if (hasOptionValue(game.pending_guess_id)) throw new Error('Wait for Codemaker feedback before next guess');
 
     const guess = guessDigits;
     const client = createClient(game.player2);
@@ -582,15 +688,22 @@ export function MyGameGame({
       guess: Buffer.from(guess),
     });
     logTxCreated(`submit_guess(session_id=${sessionId})`, tx);
+    const before = await fetchLatestGame();
     await tx.signAndSend();
     console.log('[my-game-ui][tx] sent submit_guess', { sessionId, guess });
-
+    setMessage('Codebreaker transaction sent. Waiting for confirmation...');
+    await waitForGameCondition(
+      (next) =>
+        next.guesses.length > before.guesses.length &&
+        hasOptionValue(next.pending_guess_id)
+    );
     await loadGame(sessionId);
-    setMessage('Guess submitted');
+    setMessage('Codebreaker transaction confirmed. Waiting for Codemaker feedback proof.');
   });
 
   const handleFeedbackProof = () => run(async () => {
     console.log('[my-game-ui] feedback+proof', { sessionId });
+    setMessage('Codemaker proof initiated. Preparing transaction...');
     const latestGame = await fetchLatestGame();
     setGame(latestGame);
     if (userAddress !== latestGame.player1) throw new Error(`Only Codemaker can submit feedback proof. Expected ${latestGame.player1}`);
@@ -628,6 +741,7 @@ export function MyGameGame({
       proof_blob: proofBlob,
     });
     logTxCreated(`submit_feedback_proof(session_id=${sessionId}, guess_id=${pendingGuessId})`, tx);
+    const before = await fetchLatestGame();
     await tx.signAndSend();
     console.log('[my-game-ui][tx] sent submit_feedback_proof', {
       sessionId,
@@ -635,9 +749,18 @@ export function MyGameGame({
       exact: fb.exact,
       partial: fb.partial,
     });
-
+    setMessage('Codemaker proof transaction sent. Waiting for confirmation...');
+    const confirmed = await waitForGameCondition(
+      (next) =>
+        next.feedbacks.length > before.feedbacks.length ||
+        next.ended
+    );
     await loadGame(sessionId);
-    setMessage(`Feedback proof submitted (exact=${fb.exact}, partial=${fb.partial})`);
+    setMessage(
+      confirmed.ended
+        ? 'Codemaker proof transaction confirmed. Game finished.'
+        : 'Codemaker proof transaction confirmed. Waiting for Codebreaker next guess.'
+    );
     onStandingsRefresh();
 
     if (fb.exact === 4) {
@@ -696,11 +819,13 @@ export function MyGameGame({
     : null;
   const isPlayer1 = !!game && userAddress === game.player1;
   const isPlayer2 = !!game && userAddress === game.player2;
-  const canCommit = !!game && !game.ended && userAddress === game.player1 && !game.commitment;
-  const canGuess = !!game && !game.ended && userAddress === game.player2 && !!game.commitment && game.pending_guess_id === null;
-  const canFeedback = !!game && !game.ended && userAddress === game.player1 && game.pending_guess_id !== null;
+  const hasCommitment = !!game && game.commitment !== null && game.commitment !== undefined;
+  const canCommit = !!game && !game.ended && userAddress === game.player1 && !hasCommitment;
+  const hasPendingGuess = !!game && hasOptionValue(game.pending_guess_id);
+  const canGuess = !!game && !game.ended && userAddress === game.player2 && hasCommitment && !hasPendingGuess;
+  const canFeedback = !!game && !game.ended && userAddress === game.player1 && hasPendingGuess;
   const pendingGuessDigits = (() => {
-    if (!game || game.pending_guess_id === null || game.pending_guess_id === undefined) return null as Guess4 | null;
+    if (!game || !hasOptionValue(game.pending_guess_id)) return null as Guess4 | null;
     const rec = game.guesses.find((g: { guess_id: number | bigint; guess: Buffer }) => Number(g.guess_id) === Number(game.pending_guess_id));
     if (!rec) return null;
     try {
@@ -742,33 +867,16 @@ export function MyGameGame({
     }
     return rows;
   })();
-  const statusHint = game
-    ? game.ended
-      ? 'Game finished.'
-      : !game.commitment
-        ? userAddress === game.player1
-          ? 'Your turn: submit secret commitment first.'
-          : 'Waiting for Codemaker to submit secret commitment.'
-      : game.pending_guess_id !== undefined && game.pending_guess_id !== null
-        ? userAddress === game.player1
-          ? `Codebreaker submitted a guess${pendingGuessDigits ? ` (${pendingGuessDigits.join(',')})` : ''}. Submit feedback proof now.`
-          : 'Guess submitted. Waiting for Codemaker feedback proof.'
-        : userAddress === game.player2
-          ? latestFeedback
-            ? `Latest feedback: exact=${latestFeedback.exact}, partial=${latestFeedback.partial}. Your turn: submit next guess.`
-            : 'Your turn: submit next guess.'
-          : 'Waiting for Codebreaker guess.'
-    : '';
   const latestBanner = (() => {
     if (error) return { text: error, cls: 'from-red-50 to-pink-50 border-red-200 text-red-700' };
     if (secretRecoveryError) return { text: secretRecoveryError, cls: 'from-red-50 to-pink-50 border-red-200 text-red-700' };
-    if (statusHint) return { text: statusHint, cls: 'from-green-50 to-emerald-50 border-green-200 text-green-700' };
+    if (message) return { text: message, cls: 'from-blue-50 to-cyan-50 border-blue-200 text-blue-700' };
     return null;
   })();
 
   useEffect(() => {
     if (!game || !userAddress) return;
-    if (!game.commitment || userAddress !== game.player1) {
+    if (!hasCommitment || userAddress !== game.player1) {
       setSecretRecoveryError('');
       return;
     }
@@ -798,7 +906,7 @@ export function MyGameGame({
     } catch {
       setSecretRecoveryError('You lost the secret and salt for this committed session. Please start again.');
     }
-  }, [game, userAddress, sessionId]);
+  }, [game, userAddress, sessionId, hasCommitment]);
 
   return (
     <div className="bg-white/70 backdrop-blur-xl rounded-2xl p-8 shadow-xl border-2 border-purple-200">
