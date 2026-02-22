@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { Keypair, TransactionBuilder, hash } from '@stellar/stellar-sdk';
-import { Client as MyGameClient } from '../../../bindings/my_game/src/index';
+import { Client as MyGameClient } from '../games/my-game/bindings';
 
 type EnvMap = Record<string, string>;
 type Guess4 = [number, number, number, number];

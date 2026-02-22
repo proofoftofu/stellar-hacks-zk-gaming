@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Buffer } from 'buffer';
 import { Keypair, TransactionBuilder, hash } from '@stellar/stellar-sdk';
-import { Client as MyGameClient, type Game } from '../../../../bindings/my_game/src/index';
+import { Client as MyGameClient, type Game } from './bindings';
 import { MyGameService } from './myGameService';
 import { useWallet } from '@/hooks/useWallet';
 import {
@@ -407,7 +407,7 @@ export function MyGameGame({
 
         if (phase === 'game') {
           const latest = await fetchLatestGame();
-          setGame((prev) => {
+          setGame((prev: Game | null) => {
             const prevJson = prev ? JSON.stringify(prev, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)) : '';
             const nextJson = JSON.stringify(latest, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
             return prevJson === nextJson ? prev : latest;
@@ -515,7 +515,7 @@ export function MyGameGame({
         if (!kp) throw new Error(`Missing keypair for ${addr}`);
         await tx.signAuthEntries({
           address: addr,
-          signAuthEntry: async (preimageXdr) => {
+          signAuthEntry: async (preimageXdr: string) => {
             const payload = hash(Buffer.from(preimageXdr, 'base64'));
             const sig = kp.sign(payload);
             return { signedAuthEntry: Buffer.from(sig).toString('base64') };
@@ -599,7 +599,7 @@ export function MyGameGame({
     }
 
     const pendingGuessId = Number(latestGame.pending_guess_id);
-    const guessRecord = latestGame.guesses.find((g) => Number(g.guess_id) === pendingGuessId);
+    const guessRecord = latestGame.guesses.find((g: { guess_id: number | bigint; guess: Buffer }) => Number(g.guess_id) === pendingGuessId);
     if (!guessRecord) throw new Error(`Missing guess record for guess_id ${pendingGuessId}`);
 
     const secret = secretDigits;
@@ -701,7 +701,7 @@ export function MyGameGame({
   const canFeedback = !!game && !game.ended && userAddress === game.player1 && game.pending_guess_id !== null;
   const pendingGuessDigits = (() => {
     if (!game || game.pending_guess_id === null || game.pending_guess_id === undefined) return null as Guess4 | null;
-    const rec = game.guesses.find((g) => Number(g.guess_id) === Number(game.pending_guess_id));
+    const rec = game.guesses.find((g: { guess_id: number | bigint; guess: Buffer }) => Number(g.guess_id) === Number(game.pending_guess_id));
     if (!rec) return null;
     try {
       return parseGuessBuffer(Buffer.from(rec.guess));

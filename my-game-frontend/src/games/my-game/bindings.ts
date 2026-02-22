@@ -31,135 +31,127 @@ if (typeof window !== "undefined") {
 }
 
 
-export const networks = {
-  testnet: {
-    networkPassphrase: "Test SDF Network ; September 2015",
-    contractId: "CA4TU5EEAZ3DVPMJUE2EIE6E4CV6DZVOTH65G7DBJI565E57DYH3YBHT",
-  }
-} as const
+
 
 
 export interface Game {
+  attempts_used: u32;
+  commitment: Option<Buffer>;
+  ended: boolean;
+  feedbacks: Array<FeedbackRecord>;
+  guesses: Array<GuessRecord>;
+  max_attempts: u32;
+  next_guess_id: u32;
+  pending_guess_id: Option<u32>;
   player1: string;
-  player1_guess: Option<u32>;
   player1_points: i128;
   player2: string;
-  player2_guess: Option<u32>;
   player2_points: i128;
+  solved: boolean;
   winner: Option<string>;
-  winning_number: Option<u32>;
 }
 
 export const Errors = {
   1: {message:"GameNotFound"},
   2: {message:"NotPlayer"},
-  3: {message:"AlreadyGuessed"},
-  4: {message:"BothPlayersNotGuessed"},
-  5: {message:"GameAlreadyEnded"}
+  3: {message:"GameAlreadyEnded"},
+  4: {message:"CommitmentAlreadySet"},
+  5: {message:"CommitmentNotSet"},
+  6: {message:"GuessPendingFeedback"},
+  7: {message:"NoPendingGuess"},
+  8: {message:"InvalidGuessId"},
+  9: {message:"InvalidFeedback"},
+  10: {message:"InvalidPublicInputs"},
+  11: {message:"InvalidProof"},
+  12: {message:"AttemptsExhausted"},
+  13: {message:"VerifierNotSet"},
+  14: {message:"InvalidProofBlob"},
+  15: {message:"InvalidGuess"}
 }
 
-export type DataKey = {tag: "Game", values: readonly [u32]} | {tag: "GameHubAddress", values: void} | {tag: "Admin", values: void};
+export type DataKey = {tag: "Game", values: readonly [u32]} | {tag: "GameHubAddress", values: void} | {tag: "Admin", values: void} | {tag: "VerifierAddress", values: void};
+
+
+export interface GuessRecord {
+  guess: Buffer;
+  guess_id: u32;
+}
+
+export const VerifierError = {
+  1: {message:"VkParseError"},
+  2: {message:"ProofParseError"},
+  3: {message:"VerificationFailed"},
+  4: {message:"VkNotSet"}
+}
+
+
+export interface FeedbackRecord {
+  exact: u32;
+  guess_id: u32;
+  partial: u32;
+  proof_hash: Buffer;
+}
 
 export interface Client {
   /**
    * Construct and simulate a get_hub transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Get the current GameHub contract address
-   * 
-   * # Returns
-   * * `Address` - The GameHub contract address
    */
   get_hub: (options?: MethodOptions) => Promise<AssembledTransaction<string>>
 
   /**
    * Construct and simulate a set_hub transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Set a new GameHub contract address
-   * 
-   * # Arguments
-   * * `new_hub` - The new GameHub contract address
    */
   set_hub: ({new_hub}: {new_hub: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
 
   /**
    * Construct and simulate a upgrade transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Update the contract WASM hash (upgrade contract)
-   * 
-   * # Arguments
-   * * `new_wasm_hash` - The hash of the new WASM binary
    */
   upgrade: ({new_wasm_hash}: {new_wasm_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
 
   /**
    * Construct and simulate a get_game transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Get game information.
-   * 
-   * # Arguments
-   * * `session_id` - The session ID of the game
-   * 
-   * # Returns
-   * * `Game` - The game state (includes winning number after game ends)
    */
   get_game: ({session_id}: {session_id: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<Game>>>
 
   /**
    * Construct and simulate a get_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Get the current admin address
-   * 
-   * # Returns
-   * * `Address` - The admin address
    */
   get_admin: (options?: MethodOptions) => Promise<AssembledTransaction<string>>
 
   /**
    * Construct and simulate a set_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Set a new admin address
-   * 
-   * # Arguments
-   * * `new_admin` - The new admin address
    */
   set_admin: ({new_admin}: {new_admin: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
 
   /**
-   * Construct and simulate a make_guess transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Make a guess for the current game.
-   * Players can guess a number between 1 and 10.
-   * 
-   * # Arguments
-   * * `session_id` - The session ID of the game
-   * * `player` - Address of the player making the guess
-   * * `guess` - The guessed number (1-10)
-   */
-  make_guess: ({session_id, player, guess}: {session_id: u32, player: string, guess: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
-
-  /**
    * Construct and simulate a start_game transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Start a new game between two players with points.
-   * This creates a session in the Game Hub and locks points before starting the game.
-   * 
-   * **CRITICAL:** This method requires authorization from THIS contract (not players).
-   * The Game Hub will call `game_id.require_auth()` which checks this contract's address.
-   * 
-   * # Arguments
-   * * `session_id` - Unique session identifier (u32)
-   * * `player1` - Address of first player
-   * * `player2` - Address of second player
-   * * `player1_points` - Points amount committed by player 1
-   * * `player2_points` - Points amount committed by player 2
    */
   start_game: ({session_id, player1, player2, player1_points, player2_points}: {session_id: u32, player1: string, player2: string, player1_points: i128, player2_points: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
-   * Construct and simulate a reveal_winner transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Reveal the winner of the game and submit outcome to GameHub.
-   * Can only be called after both players have made their guesses.
-   * This generates the winning number, determines the winner, and ends the session.
-   * 
-   * # Arguments
-   * * `session_id` - The session ID of the game
-   * 
-   * # Returns
-   * * `Address` - Address of the winning player
+   * Construct and simulate a commit_code transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
-  reveal_winner: ({session_id}: {session_id: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<string>>>
+  commit_code: ({session_id, commitment}: {session_id: u32, commitment: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_verifier transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  get_verifier: (options?: MethodOptions) => Promise<AssembledTransaction<Option<string>>>
+
+  /**
+   * Construct and simulate a set_verifier transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  set_verifier: ({verifier}: {verifier: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
+
+  /**
+   * Construct and simulate a submit_guess transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  submit_guess: ({session_id, guess}: {session_id: u32, guess: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Result<u32>>>
+
+  /**
+   * Construct and simulate a submit_feedback_proof transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  submit_feedback_proof: ({session_id, guess_id, exact, partial, proof_blob}: {session_id: u32, guess_id: u32, exact: u32, partial: u32, proof_blob: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
 }
 export class Client extends ContractClient {
@@ -181,19 +173,25 @@ export class Client extends ContractClient {
   }
   constructor(public readonly options: ContractClientOptions) {
     super(
-      new ContractSpec([ "AAAAAQAAAAAAAAAAAAAABEdhbWUAAAAIAAAAAAAAAAdwbGF5ZXIxAAAAABMAAAAAAAAADXBsYXllcjFfZ3Vlc3MAAAAAAAPoAAAABAAAAAAAAAAOcGxheWVyMV9wb2ludHMAAAAAAAsAAAAAAAAAB3BsYXllcjIAAAAAEwAAAAAAAAANcGxheWVyMl9ndWVzcwAAAAAAA+gAAAAEAAAAAAAAAA5wbGF5ZXIyX3BvaW50cwAAAAAACwAAAAAAAAAGd2lubmVyAAAAAAPoAAAAEwAAAAAAAAAOd2lubmluZ19udW1iZXIAAAAAA+gAAAAE",
-        "AAAABAAAAAAAAAAAAAAABUVycm9yAAAAAAAABQAAAAAAAAAMR2FtZU5vdEZvdW5kAAAAAQAAAAAAAAAJTm90UGxheWVyAAAAAAAAAgAAAAAAAAAOQWxyZWFkeUd1ZXNzZWQAAAAAAAMAAAAAAAAAFUJvdGhQbGF5ZXJzTm90R3Vlc3NlZAAAAAAAAAQAAAAAAAAAEEdhbWVBbHJlYWR5RW5kZWQAAAAF",
-        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAAAwAAAAEAAAAAAAAABEdhbWUAAAABAAAABAAAAAAAAAAAAAAADkdhbWVIdWJBZGRyZXNzAAAAAAAAAAAAAAAAAAVBZG1pbgAAAA==",
-        "AAAAAAAAAF5HZXQgdGhlIGN1cnJlbnQgR2FtZUh1YiBjb250cmFjdCBhZGRyZXNzCgojIFJldHVybnMKKiBgQWRkcmVzc2AgLSBUaGUgR2FtZUh1YiBjb250cmFjdCBhZGRyZXNzAAAAAAAHZ2V0X2h1YgAAAAAAAAAAAQAAABM=",
-        "AAAAAAAAAF5TZXQgYSBuZXcgR2FtZUh1YiBjb250cmFjdCBhZGRyZXNzCgojIEFyZ3VtZW50cwoqIGBuZXdfaHViYCAtIFRoZSBuZXcgR2FtZUh1YiBjb250cmFjdCBhZGRyZXNzAAAAAAAHc2V0X2h1YgAAAAABAAAAAAAAAAduZXdfaHViAAAAABMAAAAA",
-        "AAAAAAAAAHFVcGRhdGUgdGhlIGNvbnRyYWN0IFdBU00gaGFzaCAodXBncmFkZSBjb250cmFjdCkKCiMgQXJndW1lbnRzCiogYG5ld193YXNtX2hhc2hgIC0gVGhlIGhhc2ggb2YgdGhlIG5ldyBXQVNNIGJpbmFyeQAAAAAAAAd1cGdyYWRlAAAAAAEAAAAAAAAADW5ld193YXNtX2hhc2gAAAAAAAPuAAAAIAAAAAA=",
-        "AAAAAAAAAJ1HZXQgZ2FtZSBpbmZvcm1hdGlvbi4KCiMgQXJndW1lbnRzCiogYHNlc3Npb25faWRgIC0gVGhlIHNlc3Npb24gSUQgb2YgdGhlIGdhbWUKCiMgUmV0dXJucwoqIGBHYW1lYCAtIFRoZSBnYW1lIHN0YXRlIChpbmNsdWRlcyB3aW5uaW5nIG51bWJlciBhZnRlciBnYW1lIGVuZHMpAAAAAAAACGdldF9nYW1lAAAAAQAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAEAAAPpAAAH0AAAAARHYW1lAAAAAw==",
-        "AAAAAAAAAEhHZXQgdGhlIGN1cnJlbnQgYWRtaW4gYWRkcmVzcwoKIyBSZXR1cm5zCiogYEFkZHJlc3NgIC0gVGhlIGFkbWluIGFkZHJlc3MAAAAJZ2V0X2FkbWluAAAAAAAAAAAAAAEAAAAT",
-        "AAAAAAAAAEpTZXQgYSBuZXcgYWRtaW4gYWRkcmVzcwoKIyBBcmd1bWVudHMKKiBgbmV3X2FkbWluYCAtIFRoZSBuZXcgYWRtaW4gYWRkcmVzcwAAAAAACXNldF9hZG1pbgAAAAAAAAEAAAAAAAAACW5ld19hZG1pbgAAAAAAABMAAAAA",
-        "AAAAAAAAAOJNYWtlIGEgZ3Vlc3MgZm9yIHRoZSBjdXJyZW50IGdhbWUuClBsYXllcnMgY2FuIGd1ZXNzIGEgbnVtYmVyIGJldHdlZW4gMSBhbmQgMTAuCgojIEFyZ3VtZW50cwoqIGBzZXNzaW9uX2lkYCAtIFRoZSBzZXNzaW9uIElEIG9mIHRoZSBnYW1lCiogYHBsYXllcmAgLSBBZGRyZXNzIG9mIHRoZSBwbGF5ZXIgbWFraW5nIHRoZSBndWVzcwoqIGBndWVzc2AgLSBUaGUgZ3Vlc3NlZCBudW1iZXIgKDEtMTApAAAAAAAKbWFrZV9ndWVzcwAAAAAAAwAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAAAAAAGcGxheWVyAAAAAAATAAAAAAAAAAVndWVzcwAAAAAAAAQAAAABAAAD6QAAAAIAAAAD",
-        "AAAAAAAAAipTdGFydCBhIG5ldyBnYW1lIGJldHdlZW4gdHdvIHBsYXllcnMgd2l0aCBwb2ludHMuClRoaXMgY3JlYXRlcyBhIHNlc3Npb24gaW4gdGhlIEdhbWUgSHViIGFuZCBsb2NrcyBwb2ludHMgYmVmb3JlIHN0YXJ0aW5nIHRoZSBnYW1lLgoKKipDUklUSUNBTDoqKiBUaGlzIG1ldGhvZCByZXF1aXJlcyBhdXRob3JpemF0aW9uIGZyb20gVEhJUyBjb250cmFjdCAobm90IHBsYXllcnMpLgpUaGUgR2FtZSBIdWIgd2lsbCBjYWxsIGBnYW1lX2lkLnJlcXVpcmVfYXV0aCgpYCB3aGljaCBjaGVja3MgdGhpcyBjb250cmFjdCdzIGFkZHJlc3MuCgojIEFyZ3VtZW50cwoqIGBzZXNzaW9uX2lkYCAtIFVuaXF1ZSBzZXNzaW9uIGlkZW50aWZpZXIgKHUzMikKKiBgcGxheWVyMWAgLSBBZGRyZXNzIG9mIGZpcnN0IHBsYXllcgoqIGBwbGF5ZXIyYCAtIEFkZHJlc3Mgb2Ygc2Vjb25kIHBsYXllcgoqIGBwbGF5ZXIxX3BvaW50c2AgLSBQb2ludHMgYW1vdW50IGNvbW1pdHRlZCBieSBwbGF5ZXIgMQoqIGBwbGF5ZXIyX3BvaW50c2AgLSBQb2ludHMgYW1vdW50IGNvbW1pdHRlZCBieSBwbGF5ZXIgMgAAAAAACnN0YXJ0X2dhbWUAAAAAAAUAAAAAAAAACnNlc3Npb25faWQAAAAAAAQAAAAAAAAAB3BsYXllcjEAAAAAEwAAAAAAAAAHcGxheWVyMgAAAAATAAAAAAAAAA5wbGF5ZXIxX3BvaW50cwAAAAAACwAAAAAAAAAOcGxheWVyMl9wb2ludHMAAAAAAAsAAAABAAAD6QAAAAIAAAAD",
-        "AAAAAAAAAKNJbml0aWFsaXplIHRoZSBjb250cmFjdCB3aXRoIEdhbWVIdWIgYWRkcmVzcyBhbmQgYWRtaW4KCiMgQXJndW1lbnRzCiogYGFkbWluYCAtIEFkbWluIGFkZHJlc3MgKGNhbiB1cGdyYWRlIGNvbnRyYWN0KQoqIGBnYW1lX2h1YmAgLSBBZGRyZXNzIG9mIHRoZSBHYW1lSHViIGNvbnRyYWN0AAAAAA1fX2NvbnN0cnVjdG9yAAAAAAAAAgAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAAAAAAhnYW1lX2h1YgAAABMAAAAA",
-        "AAAAAAAAATtSZXZlYWwgdGhlIHdpbm5lciBvZiB0aGUgZ2FtZSBhbmQgc3VibWl0IG91dGNvbWUgdG8gR2FtZUh1Yi4KQ2FuIG9ubHkgYmUgY2FsbGVkIGFmdGVyIGJvdGggcGxheWVycyBoYXZlIG1hZGUgdGhlaXIgZ3Vlc3Nlcy4KVGhpcyBnZW5lcmF0ZXMgdGhlIHdpbm5pbmcgbnVtYmVyLCBkZXRlcm1pbmVzIHRoZSB3aW5uZXIsIGFuZCBlbmRzIHRoZSBzZXNzaW9uLgoKIyBBcmd1bWVudHMKKiBgc2Vzc2lvbl9pZGAgLSBUaGUgc2Vzc2lvbiBJRCBvZiB0aGUgZ2FtZQoKIyBSZXR1cm5zCiogYEFkZHJlc3NgIC0gQWRkcmVzcyBvZiB0aGUgd2lubmluZyBwbGF5ZXIAAAAADXJldmVhbF93aW5uZXIAAAAAAAABAAAAAAAAAApzZXNzaW9uX2lkAAAAAAAEAAAAAQAAA+kAAAATAAAAAw==" ]),
+      new ContractSpec([ "AAAAAQAAAAAAAAAAAAAABEdhbWUAAAAOAAAAAAAAAA1hdHRlbXB0c191c2VkAAAAAAAABAAAAAAAAAAKY29tbWl0bWVudAAAAAAD6AAAA+4AAAAgAAAAAAAAAAVlbmRlZAAAAAAAAAEAAAAAAAAACWZlZWRiYWNrcwAAAAAAA+oAAAfQAAAADkZlZWRiYWNrUmVjb3JkAAAAAAAAAAAAB2d1ZXNzZXMAAAAD6gAAB9AAAAALR3Vlc3NSZWNvcmQAAAAAAAAAAAxtYXhfYXR0ZW1wdHMAAAAEAAAAAAAAAA1uZXh0X2d1ZXNzX2lkAAAAAAAABAAAAAAAAAAQcGVuZGluZ19ndWVzc19pZAAAA+gAAAAEAAAAAAAAAAdwbGF5ZXIxAAAAABMAAAAAAAAADnBsYXllcjFfcG9pbnRzAAAAAAALAAAAAAAAAAdwbGF5ZXIyAAAAABMAAAAAAAAADnBsYXllcjJfcG9pbnRzAAAAAAALAAAAAAAAAAZzb2x2ZWQAAAAAAAEAAAAAAAAABndpbm5lcgAAAAAD6AAAABM=",
+        "AAAABAAAAAAAAAAAAAAABUVycm9yAAAAAAAADwAAAAAAAAAMR2FtZU5vdEZvdW5kAAAAAQAAAAAAAAAJTm90UGxheWVyAAAAAAAAAgAAAAAAAAAQR2FtZUFscmVhZHlFbmRlZAAAAAMAAAAAAAAAFENvbW1pdG1lbnRBbHJlYWR5U2V0AAAABAAAAAAAAAAQQ29tbWl0bWVudE5vdFNldAAAAAUAAAAAAAAAFEd1ZXNzUGVuZGluZ0ZlZWRiYWNrAAAABgAAAAAAAAAOTm9QZW5kaW5nR3Vlc3MAAAAAAAcAAAAAAAAADkludmFsaWRHdWVzc0lkAAAAAAAIAAAAAAAAAA9JbnZhbGlkRmVlZGJhY2sAAAAACQAAAAAAAAATSW52YWxpZFB1YmxpY0lucHV0cwAAAAAKAAAAAAAAAAxJbnZhbGlkUHJvb2YAAAALAAAAAAAAABFBdHRlbXB0c0V4aGF1c3RlZAAAAAAAAAwAAAAAAAAADlZlcmlmaWVyTm90U2V0AAAAAAANAAAAAAAAABBJbnZhbGlkUHJvb2ZCbG9iAAAADgAAAAAAAAAMSW52YWxpZEd1ZXNzAAAADw==",
+        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAABAAAAAEAAAAAAAAABEdhbWUAAAABAAAABAAAAAAAAAAAAAAADkdhbWVIdWJBZGRyZXNzAAAAAAAAAAAAAAAAAAVBZG1pbgAAAAAAAAAAAAAAAAAAD1ZlcmlmaWVyQWRkcmVzcwA=",
+        "AAAAAQAAAAAAAAAAAAAAC0d1ZXNzUmVjb3JkAAAAAAIAAAAAAAAABWd1ZXNzAAAAAAAD7gAAAAQAAAAAAAAACGd1ZXNzX2lkAAAABA==",
+        "AAAABAAAAAAAAAAAAAAADVZlcmlmaWVyRXJyb3IAAAAAAAAEAAAAAAAAAAxWa1BhcnNlRXJyb3IAAAABAAAAAAAAAA9Qcm9vZlBhcnNlRXJyb3IAAAAAAgAAAAAAAAASVmVyaWZpY2F0aW9uRmFpbGVkAAAAAAADAAAAAAAAAAhWa05vdFNldAAAAAQ=",
+        "AAAAAQAAAAAAAAAAAAAADkZlZWRiYWNrUmVjb3JkAAAAAAAEAAAAAAAAAAVleGFjdAAAAAAAAAQAAAAAAAAACGd1ZXNzX2lkAAAABAAAAAAAAAAHcGFydGlhbAAAAAAEAAAAAAAAAApwcm9vZl9oYXNoAAAAAAPuAAAAIA==",
+        "AAAAAAAAAAAAAAAHZ2V0X2h1YgAAAAAAAAAAAQAAABM=",
+        "AAAAAAAAAAAAAAAHc2V0X2h1YgAAAAABAAAAAAAAAAduZXdfaHViAAAAABMAAAAA",
+        "AAAAAAAAAAAAAAAHdXBncmFkZQAAAAABAAAAAAAAAA1uZXdfd2FzbV9oYXNoAAAAAAAD7gAAACAAAAAA",
+        "AAAAAAAAAAAAAAAIZ2V0X2dhbWUAAAABAAAAAAAAAApzZXNzaW9uX2lkAAAAAAAEAAAAAQAAA+kAAAfQAAAABEdhbWUAAAAD",
+        "AAAAAAAAAAAAAAAJZ2V0X2FkbWluAAAAAAAAAAAAAAEAAAAT",
+        "AAAAAAAAAAAAAAAJc2V0X2FkbWluAAAAAAAAAQAAAAAAAAAJbmV3X2FkbWluAAAAAAAAEwAAAAA=",
+        "AAAAAAAAAAAAAAAKc3RhcnRfZ2FtZQAAAAAABQAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAAAAAAHcGxheWVyMQAAAAATAAAAAAAAAAdwbGF5ZXIyAAAAABMAAAAAAAAADnBsYXllcjFfcG9pbnRzAAAAAAALAAAAAAAAAA5wbGF5ZXIyX3BvaW50cwAAAAAACwAAAAEAAAPpAAAAAgAAAAM=",
+        "AAAAAAAAAAAAAAALY29tbWl0X2NvZGUAAAAAAgAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAAAAAAKY29tbWl0bWVudAAAAAAD7gAAACAAAAABAAAD6QAAAAIAAAAD",
+        "AAAAAAAAAAAAAAAMZ2V0X3ZlcmlmaWVyAAAAAAAAAAEAAAPoAAAAEw==",
+        "AAAAAAAAAAAAAAAMc2V0X3ZlcmlmaWVyAAAAAQAAAAAAAAAIdmVyaWZpZXIAAAATAAAAAA==",
+        "AAAAAAAAAAAAAAAMc3VibWl0X2d1ZXNzAAAAAgAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAAAAAAFZ3Vlc3MAAAAAAAPuAAAABAAAAAEAAAPpAAAABAAAAAM=",
+        "AAAAAAAAAAAAAAANX19jb25zdHJ1Y3RvcgAAAAAAAAIAAAAAAAAABWFkbWluAAAAAAAAEwAAAAAAAAAIZ2FtZV9odWIAAAATAAAAAA==",
+        "AAAAAAAAAAAAAAAVc3VibWl0X2ZlZWRiYWNrX3Byb29mAAAAAAAABQAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAAAAAAIZ3Vlc3NfaWQAAAAEAAAAAAAAAAVleGFjdAAAAAAAAAQAAAAAAAAAB3BhcnRpYWwAAAAABAAAAAAAAAAKcHJvb2ZfYmxvYgAAAAAADgAAAAEAAAPpAAAAAgAAAAM=" ]),
       options
     )
   }
@@ -204,8 +202,11 @@ export class Client extends ContractClient {
         get_game: this.txFromJSON<Result<Game>>,
         get_admin: this.txFromJSON<string>,
         set_admin: this.txFromJSON<null>,
-        make_guess: this.txFromJSON<Result<void>>,
         start_game: this.txFromJSON<Result<void>>,
-        reveal_winner: this.txFromJSON<Result<string>>
+        commit_code: this.txFromJSON<Result<void>>,
+        get_verifier: this.txFromJSON<Option<string>>,
+        set_verifier: this.txFromJSON<null>,
+        submit_guess: this.txFromJSON<Result<u32>>,
+        submit_feedback_proof: this.txFromJSON<Result<void>>
   }
 }

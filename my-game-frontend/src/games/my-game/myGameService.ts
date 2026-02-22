@@ -591,37 +591,7 @@ export class MyGameService {
     signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
   ) {
-    if (guess < 1 || guess > 10) {
-      throw new Error('Guess must be between 1 and 10');
-    }
-
-    const client = this.createSigningClient(playerAddress, signer);
-    const tx = await client.make_guess({
-      session_id: sessionId,
-      player: playerAddress,
-      guess,
-    }, DEFAULT_METHOD_OPTIONS);
-    // NOTE: Contract methods automatically simulate - footprint is already prepared
-
-    const validUntilLedgerSeq = authTtlMinutes
-      ? await calculateValidUntilLedger(RPC_URL, authTtlMinutes)
-      : await calculateValidUntilLedger(RPC_URL, DEFAULT_AUTH_TTL_MINUTES);
-
-    try {
-      const sentTx = await signAndSendViaLaunchtube(tx, DEFAULT_METHOD_OPTIONS.timeoutInSeconds, validUntilLedgerSeq);
-
-      if (sentTx.getTransactionResponse?.status === 'FAILED') {
-        const errorMessage = this.extractErrorFromDiagnostics(sentTx.getTransactionResponse);
-        throw new Error(`Transaction failed: ${errorMessage}`);
-      }
-
-      return sentTx.result;
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('Transaction failed!')) {
-        throw new Error('Transaction failed - check if the game is still active and you haven\'t already guessed');
-      }
-      throw err;
-    }
+    throw new Error('makeGuess is deprecated for this contract. Use submit_guess via the ZK flow.');
   }
 
   /**
@@ -633,39 +603,7 @@ export class MyGameService {
     signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
   ) {
-    const client = this.createSigningClient(callerAddress, signer);
-    const tx = await client.reveal_winner({ session_id: sessionId }, DEFAULT_METHOD_OPTIONS);
-    // NOTE: Contract methods automatically simulate - footprint already includes all required storage keys
-    // (reveal_winner calls the Game Hub end_game() hook)
-
-    const validUntilLedgerSeq = authTtlMinutes
-      ? await calculateValidUntilLedger(RPC_URL, authTtlMinutes)
-      : await calculateValidUntilLedger(RPC_URL, DEFAULT_AUTH_TTL_MINUTES);
-
-    try {
-      const sentTx = await signAndSendViaLaunchtube(tx, DEFAULT_METHOD_OPTIONS.timeoutInSeconds, validUntilLedgerSeq);
-
-      // Check transaction status before accessing result
-      if (sentTx.getTransactionResponse?.status === 'FAILED') {
-        // Extract error from diagnostic events instead of return_value
-        const errorMessage = this.extractErrorFromDiagnostics(sentTx.getTransactionResponse);
-        throw new Error(`Transaction failed: ${errorMessage}`);
-      }
-
-      return sentTx.result;
-    } catch (err) {
-      // If we get here, either:
-      // 1. The transaction failed and we couldn't parse the result (return_value is null)
-      // 2. The transaction submission failed
-      // 3. The transaction is still pending after timeout
-
-      if (err instanceof Error && err.message.includes('Transaction failed!')) {
-        // This is the SDK error when trying to access .result on a failed transaction
-        throw new Error('Transaction failed - check if both players have guessed and the game is still active');
-      }
-
-      throw err;
-    }
+    throw new Error('revealWinner is deprecated for this contract. The game ends via submit_feedback_proof.');
   }
 
   /**
