@@ -39,6 +39,7 @@ type StoredSecretState = {
 
 type AuthMode = 'create' | 'import' | 'load';
 type UiPhase = 'landing' | 'auth' | 'game';
+type UiLogEntry = { id: number; level: 'info' | 'error'; text: string };
 const SECRET_STATE_KEY = 'my-game:latest-player1-secret';
 const STELLAR_EXPERT_TX_BASE = 'https://stellar.expert/explorer/testnet/tx/';
 const DEMO_URL = import.meta.env.VITE_DEMO_URL || 'https://www.youtube.com/';
@@ -91,7 +92,12 @@ function serializeGame(game: Game | null): string {
   return JSON.stringify(game, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
 }
 
-function describeRemoteConfirmation(prev: Game | null, next: Game, userAddress: string): string | null {
+function describeRemoteConfirmation(
+  prev: Game | null,
+  next: Game,
+  userAddress: string,
+  sid: number
+): { key: string; text: string } | null {
   if (!prev) return null;
 
   if (!prev.ended && next.ended) {
@@ -99,21 +105,21 @@ function describeRemoteConfirmation(prev: Game | null, next: Game, userAddress: 
       next.winner === next.player1 ? 'Codemaker'
       : next.winner === next.player2 ? 'Codebreaker'
       : 'Unknown';
-    return `On-chain update confirmed: game ended. Winner: ${winner}.`;
+    return { key: `ended:${sid}:${next.winner ?? 'none'}`, text: `On-chain update confirmed: game ended. Winner: ${winner}.` };
   }
 
   const prevHasCommitment = hasOptionValue(prev.commitment);
   const nextHasCommitment = hasOptionValue(next.commitment);
   if (!prevHasCommitment && nextHasCommitment && userAddress === next.player2) {
-    return 'On-chain update confirmed: Codemaker commitment received. You can submit a guess.';
+    return { key: `commitment:${sid}:1`, text: 'On-chain update confirmed: Codemaker commitment received. You can submit a guess.' };
   }
 
   if (next.guesses.length > prev.guesses.length && hasOptionValue(next.pending_guess_id) && userAddress === next.player1) {
-    return 'On-chain update confirmed: Codebreaker guess received. Submit feedback proof.';
+    return { key: `guess:${sid}:${next.guesses.length}`, text: 'On-chain update confirmed: Codebreaker guess received. Submit feedback proof.' };
   }
 
   if (next.feedbacks.length > prev.feedbacks.length && userAddress === next.player2) {
-    return 'On-chain update confirmed: Codemaker feedback proof received. You can submit the next guess.';
+    return { key: `feedback:${sid}:${next.feedbacks.length}`, text: 'On-chain update confirmed: Codemaker feedback proof received. You can submit the next guess.' };
   }
 
   return null;
@@ -359,9 +365,12 @@ export function MyGameGame({
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [secretRecoveryError, setSecretRecoveryError] = useState('');
+  const [logEntries, setLogEntries] = useState<UiLogEntry[]>([]);
   const [authCodeCopied, setAuthCodeCopied] = useState(false);
   const [shareUrlCopied, setShareUrlCopied] = useState(false);
   const gameRef = useRef<Game | null>(null);
+  const seenRemoteEventKeysRef = useRef<Set<string>>(new Set());
+  const logSeqRef = useRef(0);
 
   const allowHttp = RPC_URL.startsWith('http://');
 
@@ -460,7 +469,6 @@ export function MyGameGame({
     if (loading || quickstartLoading) return;
     setLoading(true);
     setError('');
-    setMessage('');
     try {
       await fn();
     } catch (e) {
@@ -473,8 +481,8 @@ export function MyGameGame({
 
   const fetchLatestGameWithRetry = async (
     sid: number,
-    retries: number = 5,
-    delayMs: number = 1_500
+    retries: number = 14,
+    baseDelayMs: number = 1_200
   ): Promise<Game> => {
     let lastErr: unknown = null;
     for (let i = 0; i <= retries; i++) {
@@ -485,26 +493,40 @@ export function MyGameGame({
         if (!isGameNotFoundError(e) || i === retries) {
           throw e;
         }
-        await sleep(delayMs);
+        const backoff = Math.min(baseDelayMs * (1 + i * 0.6), 4_500);
+        await sleep(backoff);
       }
     }
     throw lastErr ?? new Error(`Game not found for session_id=${sid}`);
   };
 
-  const loadGame = async (sid?: number): Promise<Game> => {
-    const target = sid ?? sessionId;
-    console.log('[my-game-ui] loadGame', { sessionId: target });
-    const g = await fetchLatestGameWithRetry(target);
+  const applyLoadedGame = (target: number, g: Game): Game => {
     if (userAddress && g.player1 !== userAddress && g.player2 !== userAddress) {
       throw new Error(`Connected wallet ${userAddress} is not part of this game`);
     }
-
     setSessionId(target);
     setGame((prev) => chooseProgressedState(prev, g));
     gameRef.current = g;
+    seenRemoteEventKeysRef.current.clear();
     setPhase('game');
-    console.log('[my-game-ui] game loaded', g);
     return g;
+  };
+
+  const loadGame = async (sid?: number): Promise<Game> => {
+    const target = sid ?? sessionId;
+    console.log('[my-game-ui] loadGame', { sessionId: target });
+    try {
+      const g = await fetchLatestGameWithRetry(target);
+      applyLoadedGame(target, g);
+      console.log('[my-game-ui] game loaded', g);
+      return g;
+    } catch (e) {
+      if (isGameNotFoundError(e) && gameRef.current && sessionId === target) {
+        console.warn('[my-game-ui] get_game temporary not found; keeping previous local game state', { sessionId: target });
+        return gameRef.current;
+      }
+      throw e;
+    }
   };
 
   const fetchLatestGame = async (): Promise<Game> => {
@@ -569,6 +591,7 @@ export function MyGameGame({
               setSessionId(sid);
               setGame(g);
               gameRef.current = g;
+              seenRemoteEventKeysRef.current.clear();
               setPhase('game');
               setMessage(`On-chain update confirmed: game session is live.\n${currentTurnAction(g)}`);
             }
@@ -586,9 +609,14 @@ export function MyGameGame({
           if (prevJson !== nextJson) {
             gameRef.current = progressed;
             setGame(progressed);
-            const remoteMessage = describeRemoteConfirmation(prev, progressed, userAddress);
-            if (remoteMessage && !isAwaitingConfirmation) {
-              setMessage(remoteMessage);
+            const remoteEvent = describeRemoteConfirmation(prev, progressed, userAddress, sessionId);
+            if (remoteEvent) {
+              const seen = seenRemoteEventKeysRef.current;
+              const alreadySeen = seen.has(remoteEvent.key);
+              seen.add(remoteEvent.key);
+              if (!alreadySeen && !loading && !quickstartLoading && !isAwaitingConfirmation) {
+                setMessage(remoteEvent.text);
+              }
             }
           }
         }
@@ -597,13 +625,13 @@ export function MyGameGame({
       }
     };
 
-    timer = setInterval(poll, 2200);
+    timer = setInterval(poll, 1200);
     void poll();
     return () => {
       stopped = true;
       if (timer) clearInterval(timer);
     };
-  }, [phase, userAddress, loadSessionInput, sessionId, isAwaitingConfirmation]);
+  }, [phase, userAddress, loadSessionInput, sessionId, isAwaitingConfirmation, loading, quickstartLoading]);
 
   useEffect(() => {
     gameRef.current = game;
@@ -663,7 +691,7 @@ export function MyGameGame({
           ? `Codebreaker start-game transaction sent. Waiting for confirmation.\n${submittedUrl}`
           : 'Codebreaker start-game transaction sent. Waiting for confirmation...'
       );
-      await waitForGameCondition(
+      const confirmed = await waitForGameCondition(
         (next) =>
           next.player1 === parsed.player1 &&
           next.player2 === userAddress,
@@ -671,6 +699,7 @@ export function MyGameGame({
         2_000,
         parsed.sessionId
       );
+      applyLoadedGame(parsed.sessionId, confirmed);
     } finally {
       setIsAwaitingConfirmation(false);
     }
@@ -682,7 +711,7 @@ export function MyGameGame({
         ? `Codebreaker start-game transaction confirmed. Loading game.\n${confirmedUrl}`
         : 'Codebreaker start-game transaction confirmed. Loading game...'
     );
-    const loaded = await loadGame(parsed.sessionId);
+    const loaded = gameRef.current ?? await loadGame(parsed.sessionId);
     setMessage(
       confirmedUrl
         ? `Transaction confirmed.\n${currentTurnAction(loaded)}\n${confirmedUrl}`
@@ -703,7 +732,6 @@ export function MyGameGame({
     if (loading || quickstartLoading) return;
     setQuickstartLoading(true);
     setError('');
-    setMessage('');
     try {
       console.log('[my-game-ui] quickstart begin');
       setMessage('Quickstart initiated. Preparing Codemaker and Codebreaker transaction...');
@@ -776,7 +804,8 @@ export function MyGameGame({
             ? `Quickstart transaction sent. Waiting for confirmation.\n${submittedUrl}`
             : 'Quickstart transaction sent. Waiting for confirmation...'
         );
-        await waitForGameCondition((g) => g.player1 === p1 && g.player2 === p2);
+        const confirmed = await waitForGameCondition((g) => g.player1 === p1 && g.player2 === p2, 90_000, 2_000, sid);
+        applyLoadedGame(sid, confirmed);
       } finally {
         setIsAwaitingConfirmation(false);
       }
@@ -835,7 +864,8 @@ export function MyGameGame({
           ? `Codemaker transaction sent. Waiting for confirmation.\n${submittedUrl}`
           : 'Codemaker transaction sent. Waiting for confirmation...'
       );
-      await waitForGameCondition((next) => !hasOptionValue(before.commitment) && hasOptionValue(next.commitment));
+      const confirmed = await waitForGameCondition((next) => !hasOptionValue(before.commitment) && hasOptionValue(next.commitment));
+      applyLoadedGame(sessionId, confirmed);
     } finally {
       setIsAwaitingConfirmation(false);
     }
@@ -877,11 +907,12 @@ export function MyGameGame({
           ? `Codebreaker transaction sent. Waiting for confirmation.\n${submittedUrl}`
           : 'Codebreaker transaction sent. Waiting for confirmation...'
       );
-      await waitForGameCondition(
+      const confirmed = await waitForGameCondition(
         (next) =>
           next.guesses.length > before.guesses.length &&
           hasOptionValue(next.pending_guess_id)
       );
+      applyLoadedGame(sessionId, confirmed);
     } finally {
       setIsAwaitingConfirmation(false);
     }
@@ -978,6 +1009,7 @@ export function MyGameGame({
     } finally {
       setIsAwaitingConfirmation(false);
     }
+    applyLoadedGame(sessionId, confirmed);
     await loadGame(sessionId);
     const confirmedUrl = txUrl(submittedHash);
     setMessage(
@@ -1052,6 +1084,7 @@ export function MyGameGame({
   const hasPendingGuess = !!game && hasOptionValue(game.pending_guess_id);
   const canGuess = !!game && !game.ended && userAddress === game.player2 && hasCommitment && !hasPendingGuess;
   const canFeedback = !!game && !game.ended && userAddress === game.player1 && hasPendingGuess;
+  const isUiBusy = loading || quickstartLoading || isAwaitingConfirmation || isConnecting;
   const pendingGuessDigits = (() => {
     if (!game || !hasOptionValue(game.pending_guess_id)) return null as Guess4 | null;
     const rec = game.guesses.find((g: { guess_id: number | bigint; guess: Buffer }) => Number(g.guess_id) === Number(game.pending_guess_id));
@@ -1099,8 +1132,28 @@ export function MyGameGame({
     if (error) return { text: error, cls: 'from-red-50 to-pink-50 border-red-200 text-red-700' };
     if (secretRecoveryError) return { text: secretRecoveryError, cls: 'from-red-50 to-pink-50 border-red-200 text-red-700' };
     if (message) return { text: message, cls: 'from-blue-50 to-cyan-50 border-blue-200 text-blue-700' };
+    if (logEntries.length > 0) return { text: logEntries[logEntries.length - 1].text, cls: 'from-blue-50 to-cyan-50 border-blue-200 text-blue-700' };
     return null;
   })();
+
+  const pushLog = (text: string, level: 'info' | 'error' = 'info') => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setLogEntries((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.text === trimmed && last.level === level) return prev;
+      const next: UiLogEntry = { id: ++logSeqRef.current, level, text: trimmed };
+      return [...prev.slice(-23), next];
+    });
+  };
+
+  useEffect(() => {
+    if (message) pushLog(removeFirstUrl(message), 'info');
+  }, [message]);
+
+  useEffect(() => {
+    if (error) pushLog(error, 'error');
+  }, [error]);
 
   useEffect(() => {
     if (!game || !userAddress) return;
@@ -1249,21 +1302,21 @@ export function MyGameGame({
               <div className="pixel-tab-row">
                 <button
                   onClick={() => setAuthMode('create')}
-                  disabled={loading || quickstartLoading}
+                  disabled={isUiBusy}
                   className={`pixel-tab ${authMode === 'create' ? 'active' : ''}`}
                 >
                   CREATE
                 </button>
                 <button
                   onClick={() => setAuthMode('import')}
-                  disabled={loading || quickstartLoading}
+                  disabled={isUiBusy}
                   className={`pixel-tab ${authMode === 'import' ? 'active' : ''}`}
                 >
                   IMPORT
                 </button>
                 <button
                   onClick={() => setAuthMode('load')}
-                  disabled={loading || quickstartLoading}
+                  disabled={isUiBusy}
                   className={`pixel-tab ${authMode === 'load' ? 'active' : ''}`}
                 >
                   LOAD
@@ -1273,7 +1326,7 @@ export function MyGameGame({
               <div className="pixel-panel">
                 <p className="pixel-panel-title">DEV QUICKSTART</p>
                 <p className="mb-3">Creates and signs both local players in one move.</p>
-                <button className="pixel-btn" onClick={handleQuickStart} disabled={loading || quickstartLoading}>
+                <button className="pixel-btn" onClick={handleQuickStart} disabled={isUiBusy}>
                   {quickstartLoading ? 'QUICKSTARTING...' : 'QUICKSTART MATCH'}
                 </button>
               </div>
@@ -1287,7 +1340,7 @@ export function MyGameGame({
                     className="pixel-input font-mono"
                   />
                   {!preparedAuthCode ? (
-                    <button onClick={handlePrepareAuthCode} disabled={loading || quickstartLoading} className="pixel-btn">
+                    <button onClick={handlePrepareAuthCode} disabled={isUiBusy} className="pixel-btn">
                       {loading ? 'PREPARING...' : 'PREPARE AUTH ENTRY'}
                     </button>
                   ) : (
@@ -1327,7 +1380,7 @@ export function MyGameGame({
                   {authParseError && <p className="text-sm text-red-700 font-semibold">{authParseError}</p>}
                   <button
                     onClick={handleImportAndStart}
-                    disabled={loading || quickstartLoading || !importAuthCode.trim() || !!authParseError}
+                    disabled={isUiBusy || !importAuthCode.trim() || !!authParseError}
                     className="pixel-btn"
                   >
                     {loading ? 'IMPORTING...' : 'IMPORT AND START'}
@@ -1347,7 +1400,7 @@ export function MyGameGame({
                   <div className="flex flex-wrap gap-3">
                     <button
                       onClick={handleLoadSession}
-                      disabled={loading || quickstartLoading || !loadSessionInput.trim()}
+                      disabled={isUiBusy || !loadSessionInput.trim()}
                       className="pixel-btn"
                     >
                       {loading ? 'LOADING...' : 'LOAD GAME'}
@@ -1370,22 +1423,23 @@ export function MyGameGame({
               <p className="pixel-panel-title">MATCH ENDED</p>
               <p>Winner: {winnerLabel || 'Unknown'}</p>
               <p>Attempts: {String(game.attempts_used)} / {String(game.max_attempts)}</p>
-              <button disabled={loading || quickstartLoading} onClick={handleBackToAuth} className="pixel-btn mt-3">BACK TO AUTH</button>
+              <button disabled={isUiBusy} onClick={handleBackToAuth} className="pixel-btn mt-3">BACK TO AUTH</button>
             </div>
           ) : (
             <>
               <div className="pixel-board-meta">
                 <p>You are {isPlayer1 ? 'Codemaker' : isPlayer2 ? 'Codebreaker' : 'Not in session'}</p>
                 <p>Commitment: {hasCommitment ? 'LOCKED' : 'PENDING'}</p>
+                {game && <p>{currentTurnAction(game)}</p>}
               </div>
 
               <div className="grid lg:grid-cols-2 gap-4">
                 <div className="pixel-panel">
                   <p className="pixel-panel-title">ACTION DECK</p>
                   <div className="flex flex-wrap gap-2 mb-4">
-                    <button disabled={loading || quickstartLoading || !canCommit} onClick={handleCommit} className="pixel-btn">1 COMMIT</button>
-                    <button disabled={loading || quickstartLoading || !canGuess} onClick={handleGuess} className="pixel-btn">2 GUESS</button>
-                    <button disabled={loading || quickstartLoading || !canFeedback} onClick={handleFeedbackProof} className="pixel-btn">3 PROVE</button>
+                    <button disabled={isUiBusy || !canCommit} onClick={handleCommit} className="pixel-btn">1 COMMIT</button>
+                    <button disabled={isUiBusy || !canGuess} onClick={handleGuess} className="pixel-btn">2 GUESS</button>
+                    <button disabled={isUiBusy || !canFeedback} onClick={handleFeedbackProof} className="pixel-btn">3 PROVE</button>
                   </div>
 
                   {isPlayer1 && (
@@ -1394,7 +1448,7 @@ export function MyGameGame({
                       <input
                         value={saltInput}
                         onChange={(e) => setSaltInput(e.target.value)}
-                        disabled={!!game?.commitment}
+                        disabled={!!game?.commitment || isUiBusy}
                         className="pixel-input font-mono"
                       />
                       <label className="text-sm font-semibold">Codemaker Secret</label>
@@ -1411,7 +1465,7 @@ export function MyGameGame({
                               <button
                                 key={`secret-${idx}-${value}`}
                                 type="button"
-                                disabled={!!game?.commitment}
+                                disabled={!!game?.commitment || isUiBusy}
                                 onClick={() => setSecretDigits((prev) => setGuessDigitAt(prev, idx, value))}
                                 className={`peg-picker ${secretDigits[idx] === value ? 'active' : ''}`}
                                 title={`${value} ${PEG_COLOR_META[value].label}`}
@@ -1441,6 +1495,7 @@ export function MyGameGame({
                               <button
                                 key={`guess-${idx}-${value}`}
                                 type="button"
+                                disabled={isUiBusy}
                                 onClick={() => setGuessDigits((prev) => setGuessDigitAt(prev, idx, value))}
                                 className={`peg-picker ${guessDigits[idx] === value ? 'active' : ''}`}
                                 title={`${value} ${PEG_COLOR_META[value].label}`}
