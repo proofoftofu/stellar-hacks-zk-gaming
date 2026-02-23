@@ -5,20 +5,9 @@ import {
   methodNotAllowed,
   normalizeCommitmentBody,
   parseRequestBody,
-} from './_shared';
+} from './shared.js';
 
-type ApiReq = {
-  method?: string;
-  body?: unknown;
-};
-
-type ApiRes = {
-  status: (code: number) => ApiRes;
-  json: (body: unknown) => void;
-  setHeader: (name: string, value: string) => void;
-};
-
-export default async function handler(req: ApiReq, res: ApiRes) {
+export default async function handler(req, res) {
   allowCors(res);
   if (req.method === 'OPTIONS') {
     return json(res, 200, { ok: true });

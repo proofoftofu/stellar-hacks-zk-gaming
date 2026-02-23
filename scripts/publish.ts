@@ -176,6 +176,11 @@ normalizeBuildScripts(outputDir);
 
 // Make Vercel deployment from this published folder predictable for SPA + API.
 const vercelConfig = {
+  functions: {
+    'api/zk/prove.js': {
+      includeFiles: '{api/zk/my_game.json,node_modules/@aztec/bb.js/dest/node/barretenberg_wasm/**/*,node_modules/@noir-lang/noir_wasm/**/*}',
+    },
+  },
   routes: [
     { handle: 'filesystem' },
     { src: '/.*', dest: '/index.html' },
