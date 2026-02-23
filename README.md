@@ -26,11 +26,11 @@ https://youtu.be/5Pb5MpLzIqw
   - proof is valid against stored VK
 - If `exact == 4`, `Codebreaker` wins; otherwise after 12 attempts, `Codemaker` wins.
 
-Notes:
-- The secret is not revealed; only feedback is public.
-- Proof generation is runtime (no pre-generated `my-game.proof` / `my-game.public_inputs` needed).
-
 [!screen](./assets/screen.png)
+
+Why ZK is used:
+- **Private but verifiable feedback**: The Codemaker proves that (exact, partial) is computed correctly from the secret and the guess — without revealing the secret code.
+- **Trustless fairness**: The smart contract verifies the proof on-chain, so the Codemaker cannot lie about the feedback.
 
 ## On-chain Info
 
