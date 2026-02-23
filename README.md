@@ -26,7 +26,7 @@ https://youtu.be/5Pb5MpLzIqw
   - proof is valid against stored VK
 - If `exact == 4`, `Codebreaker` wins; otherwise after 12 attempts, `Codemaker` wins.
 
-![screen](./assets/screen.png)
+![diagram-new](./assets/diagram-new.png)
 
 Why ZK is used:
 - **Private but verifiable feedback**: The Codemaker proves that (exact, partial) is computed correctly from the secret and the guess — without revealing the secret code.
