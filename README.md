@@ -40,7 +40,7 @@ https://stellar.expert/explorer/testnet/contract/CDQ24FKWNTKSC2LHYONS47Q2KUBOV2B
 ### Onchain zk proof verification tx
 https://stellar.expert/explorer/testnet/tx/3d40675fa816cbc596f95f7d3e789871cbaff819b2b7764b00e21d3026f812c2
 
-### Development Note
+## Development Note
 
 Project is created with:
 https://jamesbachini.github.io/Stellar-Game-Studio/
@@ -49,3 +49,17 @@ On-chain ZK verifier is forked from:
 https://github.com/tupui/ultrahonk_soroban_contract
 
 - The contract has been replaced with the latest version based on the feedback provided in Discord.
+
+## Key Implementations
+
+### Circuit
+https://github.com/proofoftofu/stellar-hacks-zk-gaming/blob/main/zk/my-game-circuit/src/main.nr
+
+### Game Contract
+https://github.com/proofoftofu/stellar-hacks-zk-gaming/blob/main/contracts/my-game/src/lib.rs
+
+### Test
+https://github.com/proofoftofu/stellar-hacks-zk-gaming/blob/main/my-game-frontend/src/scripts/integrate.ts
+
+### Game UI
+https://github.com/proofoftofu/stellar-hacks-zk-gaming/blob/main/my-game-frontend/src/games/my-game/MyGameGame.tsx
