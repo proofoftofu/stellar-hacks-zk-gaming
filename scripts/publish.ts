@@ -75,6 +75,23 @@ function copyDir(src: string, dest: string) {
   }
 }
 
+function copyFile(src: string, dest: string) {
+  const parent = path.dirname(dest);
+  if (!existsSync(parent)) {
+    mkdirSync(parent, { recursive: true });
+  }
+  writeFileSync(dest, readFileSync(src));
+}
+
+function copyFirstExisting(candidates: string[], destination: string): string | null {
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    copyFile(candidate, destination);
+    return candidate;
+  }
+  return null;
+}
+
 function normalizeBuildScripts(frontendDir: string) {
   const packagePath = path.join(frontendDir, 'package.json');
   if (!existsSync(packagePath)) return;
@@ -156,6 +173,37 @@ if (existsSync(outputDir)) {
 console.log(`\n📦 Publishing ${gameSlug}...`);
 copyDir(sourceDir, outputDir);
 normalizeBuildScripts(outputDir);
+
+// Make Vercel deployment from this published folder predictable for SPA + API.
+const vercelConfig = {
+  routes: [
+    { handle: 'filesystem' },
+    { src: '/.*', dest: '/index.html' },
+  ],
+};
+writeFileSync(path.join(outputDir, 'vercel.json'), JSON.stringify(vercelConfig, null, 2) + '\n');
+
+// Ship circuit artifact with the published frontend so /api/zk/prove can run.
+const gameCircuitJsonName = `${gameSlug.replace(/-/g, '_')}.json`;
+const copiedCircuitFrom = copyFirstExisting(
+  [
+    path.join(sourceDir, 'api', 'zk', gameCircuitJsonName),
+    path.join(sourceDir, 'api', 'zk', 'my_game.json'),
+    path.join(repoRoot, 'zk', `${gameSlug}-circuit`, 'target', gameCircuitJsonName),
+    path.join(repoRoot, 'zk', `${gameSlug}-circuit`, 'target', 'my_game.json'),
+    path.join(repoRoot, 'zk', 'my-game-circuit', 'target', gameCircuitJsonName),
+    path.join(repoRoot, 'zk', 'my-game-circuit', 'target', 'my_game.json'),
+  ],
+  path.join(outputDir, 'api', 'zk', gameCircuitJsonName),
+);
+if (copiedCircuitFrom) {
+  console.log(`✅ Included circuit artifact: ${path.relative(repoRoot, copiedCircuitFrom)} -> api/zk/${gameCircuitJsonName}`);
+} else {
+  console.warn(`⚠️  Missing circuit artifact for ${gameSlug}. Expected one of:`);
+  console.warn(`   - zk/${gameSlug}-circuit/target/${gameCircuitJsonName}`);
+  console.warn('   - zk/my-game-circuit/target/my_game.json');
+  console.warn('   API proving may fail until you add api/zk/my_game.json (or set ZK_CIRCUIT_JSON_PATH).');
+}
 
 const { fileBase, component: componentName, isDefault } = findGameComponent(gameDir);
 const title = titleCaseFromSlug(gameSlug);

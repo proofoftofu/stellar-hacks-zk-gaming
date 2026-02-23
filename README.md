@@ -81,31 +81,23 @@ bun run test:integrate
   - fail path: 12 misses -> `Codemaker` wins
   - security checks (invalid / tampered submissions rejected)
 
-### Run Frontend + ZK Server (Local)
+### Run Frontend + ZK API (No `zk-server.ts`)
 From repo root:
 
-1) Resolve binary paths and export for zk-server:
-```bash
-which nargo
-which bb
-
-export NARGO_BIN="$(which nargo)"
-export BB_BIN="$(which bb)"
-```
-
-2) Start zk proof server (terminal A):
-```bash
-bun run zk:server
-```
-
-3) Start game frontend (terminal B):
+1) Start game frontend:
 ```bash
 bun run dev:game my-game
 ```
 
 Notes:
-- `zk-server` defaults to `http://localhost:8787`
-- frontend uses `VITE_ZK_SERVER_URL` if set, otherwise it also defaults to `http://localhost:8787`
+- Frontend calls:
+  - `VITE_ZK_COMMITMENT_URL` (default: `/api/zk/commitment`)
+  - `VITE_ZK_PROVE_URL` (default: `/api/zk/prove`)
+- These endpoints are implemented as Vercel functions in `my-game-frontend/api/zk/`.
+- For Vercel, provide the circuit artifact as one of:
+  - `my-game-frontend/api/zk/my_game.json`
+  - path in env var `ZK_CIRCUIT_JSON_PATH`
+- The API prover uses JS proving (`@noir-lang/noir_js` + `@aztec/bb.js`) and does not use `zk-server.ts`.
 
 ### Development Note
 

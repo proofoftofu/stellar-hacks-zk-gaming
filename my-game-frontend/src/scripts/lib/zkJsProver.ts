@@ -51,7 +51,13 @@ function packGuess(guess: Guess4): number {
 }
 
 function findCircuitJsonPath(): string {
+  const envPath = process.env.ZK_CIRCUIT_JSON_PATH;
+  if (envPath && existsSync(envPath)) return envPath;
+
   const candidates = [
+    resolve(process.cwd(), 'my-game-circuit/target/my_game.json'),
+    resolve(process.cwd(), 'my-game-circuit/my_game.json'),
+    resolve(process.cwd(), 'api/zk/my_game.json'),
     resolve(process.cwd(), 'zk/my-game-circuit/target/my_game.json'),
     resolve(process.cwd(), '../zk/my-game-circuit/target/my_game.json'),
     resolve(process.cwd(), '../../zk/my-game-circuit/target/my_game.json'),
@@ -59,7 +65,9 @@ function findCircuitJsonPath(): string {
   for (const p of candidates) {
     if (existsSync(p)) return p;
   }
-  throw new Error('Could not find zk/my-game-circuit/target/my_game.json');
+  throw new Error(
+    'Could not find my_game.json circuit artifact. Set ZK_CIRCUIT_JSON_PATH or place file in api/zk/my_game.json.',
+  );
 }
 
 function loadCircuit(): CompiledCircuit {

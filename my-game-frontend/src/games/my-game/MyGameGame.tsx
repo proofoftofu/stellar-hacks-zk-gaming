@@ -290,34 +290,34 @@ async function generateRuntimeProof(payload: {
   secret: Guess4;
   salt: Salt16;
 }): Promise<Buffer> {
-  const url = import.meta.env.VITE_ZK_SERVER_URL || 'http://localhost:8787/prove';
+  const url = import.meta.env.VITE_ZK_PROVE_URL || '/api/zk/prove';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    throw new Error(`zk_server error (${res.status}): ${await res.text()}`);
+    throw new Error(`zk prove API error (${res.status}): ${await res.text()}`);
   }
   const body = await res.json() as { proof_blob_base64?: string };
   if (!body.proof_blob_base64) {
-    throw new Error(`zk_server invalid response: ${JSON.stringify(body)}`);
+    throw new Error(`zk prove API invalid response: ${JSON.stringify(body)}`);
   }
   return Buffer.from(body.proof_blob_base64, 'base64');
 }
 
 async function fetchCommitment(secret: Guess4, salt: Salt16): Promise<string> {
-  const url = import.meta.env.VITE_ZK_SERVER_URL || 'http://localhost:8787/commitment';
+  const url = import.meta.env.VITE_ZK_COMMITMENT_URL || '/api/zk/commitment';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ secret, salt }),
   });
   if (!res.ok) {
-    throw new Error(`zk_server commitment error (${res.status}): ${await res.text()}`);
+    throw new Error(`zk commitment API error (${res.status}): ${await res.text()}`);
   }
   const body = await res.json() as { commitment?: string };
-  if (!body.commitment) throw new Error(`zk_server invalid commitment response: ${JSON.stringify(body)}`);
+  if (!body.commitment) throw new Error(`zk commitment API invalid response: ${JSON.stringify(body)}`);
   return body.commitment;
 }
 
