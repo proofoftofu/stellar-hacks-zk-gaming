@@ -2,7 +2,7 @@
 
 ![screen](./assets/screen.png)
 
-ZK Mastermind is a zk-based on-chain Mastermind game built from Stellar Game Studio and run on Stellar localnet.
+ZK Mastermind is a zk-based on-chain Mastermind game built from Stellar Game Studio and run on Stellar testnet.
 
 - `Codemaker` sets a secret 4-color code (any order).
 - `Codebreaker` tries to guess the code within 12 attempts.
@@ -15,7 +15,7 @@ ZK Mastermind is a zk-based on-chain Mastermind game built from Stellar Game Stu
 https://stellar-hacks-zk-gaming.vercel.app
 
 ## Demo
-https://youtu.be/5Pb5MpLzIqw
+https://youtu.be/7aQX8fYSBT8
 
 ## How It Works
 - `Codemaker` commits a **salted hash commitment** of the secret code on-chain.
