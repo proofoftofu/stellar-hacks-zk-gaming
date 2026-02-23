@@ -102,11 +102,35 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let progressHandle: ReturnType<typeof setInterval> | null = null;
+  const startedAt = Date.now();
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+  });
+  progressHandle = setInterval(() => {
+    const elapsed = Date.now() - startedAt;
+    console.log(`  .. waiting ${label} (${elapsed}ms elapsed)`);
+  }, 5000);
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    if (progressHandle) clearInterval(progressHandle);
+  }
+}
+
 function isRetryableTxError(error: unknown): boolean {
   const text = String(error).toLowerCase();
   if (text.includes('error(contract, #1)')) return true; // GameNotFound can be transient on testnet
   if (text.includes('error(contract, #5)')) return true; // CommitmentNotSet can be transient right after commit tx
+  if (text.includes('error(contract, #6)')) return true; // GuessPendingFeedback can be transient between feedback submit and next guess
   if (text.includes('error(contract, #7)')) return true; // NoPendingGuess: can occur during transient state races
+  if (text.includes('try_again_later')) return true;
+  if (text.includes('sending the transaction to the network failed')) return true;
   if (text.includes('timeout')) return true;
   if (text.includes('timed out')) return true;
   if (text.includes('429')) return true;
@@ -137,12 +161,16 @@ function formatUnknown(value: unknown): string {
 async function submitWithRetry(
   label: string,
   submit: () => Promise<void>,
-  attempts = 8,
+  attempts = 12,
+  attemptTimeoutMs = 35_000,
 ): Promise<void> {
   let delayMs = 1200;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      await withStepLog(`${label} (attempt ${attempt}/${attempts})`, submit);
+      await withStepLog(
+        `${label} (attempt ${attempt}/${attempts})`,
+        async () => withTimeout(submit(), attemptTimeoutMs, `${label} attempt ${attempt}`),
+      );
       return;
     } catch (error) {
       if (attempt === attempts || !isRetryableTxError(error)) throw error;
@@ -157,12 +185,16 @@ async function getGameWithRetry(
   label: string,
   client: MyGameClient,
   sessionId: number,
-  attempts = 8,
+  attempts = 12,
+  attemptTimeoutMs = 45_000,
 ): Promise<any> {
   let delayMs = 1200;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      return await withStepLog(`${label} (attempt ${attempt}/${attempts})`, async () => fetchGameState(client, sessionId));
+      return await withStepLog(
+        `${label} (attempt ${attempt}/${attempts})`,
+        async () => withTimeout(fetchGameState(client, sessionId), attemptTimeoutMs, `${label} attempt ${attempt}`),
+      );
     } catch (error) {
       if (attempt === attempts) throw error;
       const likelyRetryable = isRetryableReadError(error);
