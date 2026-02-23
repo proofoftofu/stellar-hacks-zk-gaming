@@ -1,4 +1,6 @@
-## ZK Mastermind on Steller
+# ZK Mastermind on Steller
+
+[!screen](./assets/screen.png)
 
 ZK Mastermind is a zk-based on-chain Mastermind game built from Stellar Game Studio and run on Stellar localnet.
 
@@ -9,10 +11,13 @@ ZK Mastermind is a zk-based on-chain Mastermind game built from Stellar Game Stu
 - Current rule: 4 digits in `1..6`, duplicates allowed.
 - Search space with duplicates allowed: `6^4 = 1296`.
 
-### Demo
+## Live App
+https://stellar-hacks-zk-gaming.vercel.app
+
+## Demo
 https://youtu.be/5Pb5MpLzIqw
 
-### How It Works
+## How It Works
 - `Codemaker` commits a **salted hash commitment** of the secret code on-chain.
 - `Codebreaker` submits guesses on-chain.
 - `Codemaker` computes feedback `(exact, partial)` off-chain and generates a ZK proof.
@@ -25,79 +30,15 @@ Notes:
 - The secret is not revealed; only feedback is public.
 - Proof generation is runtime (no pre-generated `my-game.proof` / `my-game.public_inputs` needed).
 
-### Prerequisites
-- `bun`
-- `stellar` CLI
-- `nargo` in PATH
-- `bb` in PATH
+[!screen](./assets/screen.png)
 
-Recommended check:
-```bash
-nargo --version
-bb --version
-```
+## On-chain Info
 
-If `bb`/`nargo` versions are mismatched, proving may fail.
+### Deployed Contract
+https://stellar.expert/explorer/testnet/contract/CDQ24FKWNTKSC2LHYONS47Q2KUBOV2BD4LE32UN3XSLGYOLO5JBAT5OR
 
-Tested toolchain in this repo:
-- `nargo`: `1.0.0-beta.9`
-- `noirc`: `1.0.0-beta.9+6abff2f16e1c1314ba30708d1cf032a536de3d19`
-- `bb`: `v0.87.0`
-
-### Repo Setup
-After cloning, initialize submodules:
-```bash
-git submodule update --init --recursive
-```
-
-### Start Localnet First
-Before setup/deploy/tests, start local Soroban network:
-```bash
-stellar container start local --limits unlimited
-```
-
-### One-Time Setup (VK)
-From repo root:
-```bash
-cd zk/my-game-circuit
-nargo compile
-bb write_vk -b target/my_game.json -o target --scheme ultra_honk --oracle_hash keccak
-cp target/vk public/my-game.vk
-cd ../../
-```
-
-Then deploy/configure local network:
-```bash
-bun run setup:local
-```
-
-### Test Commands
-From repo root:
-```bash
-bun run test:integrate
-```
-- Runs full scenarios:
-  - solve path: `Codebreaker` wins
-  - fail path: 12 misses -> `Codemaker` wins
-  - security checks (invalid / tampered submissions rejected)
-
-### Run Frontend + ZK API (No `zk-server.ts`)
-From repo root:
-
-1) Start game frontend:
-```bash
-bun run dev:game my-game
-```
-
-Notes:
-- Frontend calls:
-  - `VITE_ZK_COMMITMENT_URL` (default: `/api/zk/commitment`)
-  - `VITE_ZK_PROVE_URL` (default: `/api/zk/prove`)
-- These endpoints are implemented as Vercel functions in `my-game-frontend/api/zk/`.
-- For Vercel, provide the circuit artifact as one of:
-  - `my-game-frontend/api/zk/my_game.json`
-  - path in env var `ZK_CIRCUIT_JSON_PATH`
-- The API prover uses JS proving (`@noir-lang/noir_js` + `@aztec/bb.js`) and does not use `zk-server.ts`.
+### Onchain zk proof verification tx
+https://stellar.expert/explorer/testnet/tx/3d40675fa816cbc596f95f7d3e789871cbaff819b2b7764b00e21d3026f812c2
 
 ### Development Note
 
@@ -108,7 +49,3 @@ On-chain ZK verifier is forked from:
 https://github.com/tupui/ultrahonk_soroban_contract
 
 - The contract has been replaced with the latest version based on the feedback provided in Discord.
-
-### Limitation
-
-I could not run the ZK verifier on Testnet because of budget limit issues, so the submitted project runs on local only.
