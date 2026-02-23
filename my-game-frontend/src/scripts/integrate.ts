@@ -1,31 +1,18 @@
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { inspect } from 'node:util';
 import { Buffer } from 'node:buffer';
 import { Keypair, TransactionBuilder, hash } from '@stellar/stellar-sdk';
 import { Client as MyGameClient } from '../games/my-game/bindings';
+import {
+  proveTurnWithJs,
+  type Guess4,
+  type Salt16,
+  type TurnProofInput,
+} from './lib/zkJsProver';
 
 type EnvMap = Record<string, string>;
-type Guess4 = [number, number, number, number];
-type Salt16 = [
-  number, number, number, number,
-  number, number, number, number,
-  number, number, number, number,
-  number, number, number, number
-];
-
-type TurnProofInput = {
-  sessionId: number;
-  guessId: number;
-  commitmentDec: string;
-  guess: Guess4;
-  exact: number;
-  partial: number;
-  secret: Guess4;
-  salt: Salt16;
-};
-
 function parseEnv(content: string): EnvMap {
   const out: EnvMap = {};
   for (const rawLine of content.split('\n')) {
@@ -103,6 +90,112 @@ function assertCond(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
+async function withStepLog<T>(label: string, run: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now();
+  console.log(`  -> ${label}`);
+  const out = await run();
+  console.log(`  <- ${label} (${Date.now() - startedAt}ms)`);
+  return out;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+function isRetryableTxError(error: unknown): boolean {
+  const text = String(error).toLowerCase();
+  if (text.includes('error(contract, #1)')) return true; // GameNotFound can be transient on testnet
+  if (text.includes('error(contract, #5)')) return true; // CommitmentNotSet can be transient right after commit tx
+  if (text.includes('error(contract, #7)')) return true; // NoPendingGuess: can occur during transient state races
+  if (text.includes('timeout')) return true;
+  if (text.includes('timed out')) return true;
+  if (text.includes('429')) return true;
+  if (text.includes('503')) return true;
+  if (text.includes('txbadseq')) return true;
+  return false;
+}
+
+function isRetryableReadError(error: unknown): boolean {
+  const text = String(error).toLowerCase();
+  if (text.includes('error(contract, #1)')) return true; // GameNotFound propagation lag
+  if (text.includes('not found')) return true;
+  if (text.includes('timeout')) return true;
+  if (text.includes('timed out')) return true;
+  if (text.includes('429')) return true;
+  if (text.includes('503')) return true;
+  return false;
+}
+
+function formatUnknown(value: unknown): string {
+  try {
+    return inspect(value, { depth: 6, breakLength: 120 });
+  } catch {
+    return String(value);
+  }
+}
+
+async function submitWithRetry(
+  label: string,
+  submit: () => Promise<void>,
+  attempts = 8,
+): Promise<void> {
+  let delayMs = 1200;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await withStepLog(`${label} (attempt ${attempt}/${attempts})`, submit);
+      return;
+    } catch (error) {
+      if (attempt === attempts || !isRetryableTxError(error)) throw error;
+      console.log(`  !! ${label} retrying after error: ${String(error)} (sleep ${delayMs}ms)`);
+      await sleep(delayMs);
+      delayMs *= 2;
+    }
+  }
+}
+
+async function getGameWithRetry(
+  label: string,
+  client: MyGameClient,
+  sessionId: number,
+  attempts = 8,
+): Promise<any> {
+  let delayMs = 1200;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await withStepLog(`${label} (attempt ${attempt}/${attempts})`, async () => fetchGameState(client, sessionId));
+    } catch (error) {
+      if (attempt === attempts) throw error;
+      const likelyRetryable = isRetryableReadError(error);
+      console.log(`  !! ${label} read error classified as ${likelyRetryable ? 'retryable' : 'unknown'}; retrying`);
+      console.log(`  !! ${label} retrying after read error: ${String(error)} (sleep ${delayMs}ms)`);
+      await sleep(delayMs);
+      delayMs *= 2;
+    }
+  }
+  throw new Error(`${label} failed after retries`);
+}
+
+async function waitForGameCondition(
+  label: string,
+  client: MyGameClient,
+  sessionId: number,
+  condition: (game: any) => boolean,
+  attempts = 8,
+): Promise<any> {
+  let delayMs = 1200;
+  let lastGame: any = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const game = await getGameWithRetry(`${label} get_game`, client, sessionId);
+    lastGame = game;
+    if (condition(game)) return game;
+    if (attempt === attempts) break;
+    console.log(`  !! ${label} condition not met (${attempt}/${attempts}), sleep ${delayMs}ms`);
+    await sleep(delayMs);
+    delayMs *= 2;
+  }
+  throw new Error(`${label} condition not met after retries. last ended=${String(lastGame?.ended)} solved=${String(lastGame?.solved)} pending_guess_id=${String(lastGame?.pending_guess_id)}`);
+}
+
 function findContractErrorCodes(error: unknown): number[] {
   const text = String(error);
   const matches = [...text.matchAll(/Error\(Contract,\s*#(\d+)\)/g)];
@@ -131,22 +224,14 @@ async function expectContractFailure(
   throw new Error(`${name} unexpectedly succeeded`);
 }
 
-function expectProverFailure(name: string, run: () => void) {
+async function expectProverFailure(name: string, run: () => Promise<void>) {
   try {
-    run();
+    await run();
   } catch {
     console.log(`  ✅ ${name} prover attempt rejected`);
     return;
   }
   throw new Error(`${name} prover attempt unexpectedly succeeded`);
-}
-
-function toTomlArray(values: number[]): string {
-  return `[${values.map((v) => `"${v}"`).join(', ')}]`;
-}
-
-function packGuess(guess: Guess4): number {
-  return ((guess[0] << 24) | (guess[1] << 16) | (guess[2] << 8) | guess[3]) >>> 0;
 }
 
 function computeFeedback(secret: Guess4, guess: Guess4): { exact: number; partial: number } {
@@ -184,47 +269,6 @@ function commitmentFieldBytes(commitmentDec: string): Buffer {
   return out;
 }
 
-function findCircuitDir(): string {
-  const candidates = [
-    resolve(process.cwd(), 'zk/my-game-circuit'),
-    resolve(process.cwd(), '../zk/my-game-circuit'),
-    resolve(process.cwd(), '../../zk/my-game-circuit'),
-  ];
-  for (const p of candidates) {
-    if (existsSync(resolve(p, 'Nargo.toml'))) return p;
-  }
-  throw new Error('Could not find zk/my-game-circuit (missing Nargo.toml)');
-}
-
-function buildProverToml(input: TurnProofInput): string {
-  return [
-    '# Auto-generated by integrate.ts',
-    `session_id = "${input.sessionId}"`,
-    `guess_id = "${input.guessId}"`,
-    `commitment = "${input.commitmentDec}"`,
-    `guess_packed = "${packGuess(input.guess)}"`,
-    `exact = "${input.exact}"`,
-    `partial = "${input.partial}"`,
-    `salt = ${toTomlArray(input.salt)}`,
-    `secret = ${toTomlArray(input.secret)}`,
-    `guess = ${toTomlArray(input.guess)}`,
-    '',
-  ].join('\n');
-}
-
-function runCmd(cmd: string, args: string[], cwd: string) {
-  execFileSync(cmd, args, { cwd, stdio: 'inherit' });
-}
-
-function buildProofBlob(publicInputs: Buffer, proof: Buffer): Buffer {
-  assertCond(publicInputs.length % 32 === 0, `public_inputs length must be multiple of 32, got ${publicInputs.length}`);
-  assertCond(proof.length % 32 === 0, `proof length must be multiple of 32, got ${proof.length}`);
-  const totalFields = (publicInputs.length + proof.length) / 32;
-  const header = Buffer.alloc(4);
-  header.writeUInt32BE(totalFields, 0);
-  return Buffer.concat([header, publicInputs, proof]);
-}
-
 function parseU32Field(field: Buffer): number {
   return (
     ((field[28] ?? 0) << 24) |
@@ -250,29 +294,17 @@ function assertPublicInputsMatch(input: TurnProofInput, publicInputs: Buffer) {
   assertCond(partial === input.partial, `public_inputs partial mismatch: ${partial} != ${input.partial}`);
 }
 
-function proveTurn(input: TurnProofInput): Buffer {
-  const circuitDir = findCircuitDir();
-  const proverTomlPath = resolve(circuitDir, 'Prover.toml');
-  const previousToml = existsSync(proverTomlPath) ? readFileSync(proverTomlPath, 'utf8') : null;
-  try {
-    writeFileSync(proverTomlPath, buildProverToml(input), 'utf8');
-    runCmd('nargo', ['execute'], circuitDir);
-    runCmd('bb', ['prove', '-b', 'target/my_game.json', '-w', 'target/my_game.gz', '-o', 'target', '--scheme', 'ultra_honk', '--oracle_hash', 'keccak'], circuitDir);
-    const proof = Buffer.from(readFileSync(resolve(circuitDir, 'target/proof')));
-    const publicInputs = Buffer.from(readFileSync(resolve(circuitDir, 'target/public_inputs')));
-    assertPublicInputsMatch(input, publicInputs);
-    return buildProofBlob(publicInputs, proof);
-  } finally {
-    if (previousToml !== null) {
-      writeFileSync(proverTomlPath, previousToml, 'utf8');
-    }
-  }
+async function proveTurn(input: TurnProofInput): Promise<Buffer> {
+  const blob = await proveTurnWithJs(input);
+  const publicInputs = blob.subarray(4, 196);
+  assertPublicInputsMatch(input, publicInputs);
+  return blob;
 }
 
 async function fetchGameState(client: MyGameClient, sessionId: number) {
   const gameTx = await client.get_game({ session_id: sessionId });
   const gameSim = await gameTx.simulate();
-  assertCond(gameSim.result.isOk(), `get_game failed for session ${sessionId}`);
+  assertCond(gameSim.result.isOk(), `get_game failed for session ${sessionId}: ${formatUnknown(gameSim.result)}`);
   return gameSim.result.unwrap();
 }
 
@@ -284,21 +316,23 @@ async function startGame(
   player2: string,
   stake: bigint,
 ) {
-  const startTx = await startClient.start_game({
-    session_id: sessionId,
-    player1,
-    player2,
-    player1_points: stake,
-    player2_points: stake,
+  await submitWithRetry('start_game tx', async () => {
+    const startTx = await withStepLog('build start_game tx', async () => startClient.start_game({
+      session_id: sessionId,
+      player1,
+      player2,
+      player1_points: stake,
+      player2_points: stake,
+    }));
+    const whoNeeds = startTx.needsNonInvokerSigningBy();
+    if (whoNeeds.includes(player1)) {
+      await withStepLog('sign start_game auth entries', async () => startTx.signAuthEntries({
+        address: player1,
+        signAuthEntry: signAuthEntryWith(player1Signer, player1),
+      }));
+    }
+    await startTx.signAndSend();
   });
-  const whoNeeds = startTx.needsNonInvokerSigningBy();
-  if (whoNeeds.includes(player1)) {
-    await startTx.signAuthEntries({
-      address: player1,
-      signAuthEntry: signAuthEntryWith(player1Signer, player1),
-    });
-  }
-  await startTx.signAndSend();
 }
 
 async function run() {
@@ -361,14 +395,26 @@ async function run() {
   assertCond(solveFeedback.exact === 4, 'solve scenario should produce exact=4');
 
   await startGame(startClient, p1, solveSession, p1.publicKey(), p2.publicKey(), stake);
-  await (await player1Client.commit_code({ session_id: solveSession, commitment: commitmentBytes })).signAndSend();
-  await (await player2Client.submit_guess({ session_id: solveSession, guess: Buffer.from(solveGuess) })).signAndSend();
 
-  const solveBefore = await fetchGameState(player1Client, solveSession);
+  await submitWithRetry('commit_code tx (scenario 1)', async () => {
+    const solveCommitTx = await withStepLog('build commit_code tx (scenario 1)', async () => player1Client.commit_code({ session_id: solveSession, commitment: commitmentBytes }));
+    await solveCommitTx.signAndSend();
+  });
+  await submitWithRetry('submit_guess tx (scenario 1)', async () => {
+    const solveGuessTx = await withStepLog('build submit_guess tx (scenario 1)', async () => player2Client.submit_guess({ session_id: solveSession, guess: Buffer.from(solveGuess) }));
+    await solveGuessTx.signAndSend();
+  });
+
+  const solveBefore = await waitForGameCondition(
+    'scenario 1 pending guess visible',
+    player1Client,
+    solveSession,
+    (game) => String(game.pending_guess_id) === '0',
+  );
   const solveGuessId = Number(solveBefore.pending_guess_id);
   assertCond(solveGuessId === 0, `solve scenario expected guess_id=0, got ${String(solveBefore.pending_guess_id)}`);
 
-  const solveProofBlob = proveTurn({
+  const solveProofBlob = await withStepLog('generate proof (scenario 1)', async () => proveTurn({
     sessionId: solveSession,
     guessId: solveGuessId,
     commitmentDec,
@@ -377,16 +423,24 @@ async function run() {
     partial: solveFeedback.partial,
     secret,
     salt,
+  }));
+  await submitWithRetry('submit_feedback_proof tx (scenario 1)', async () => {
+    const solveProofTx = await withStepLog('build submit_feedback_proof tx (scenario 1)', async () => player1Client.submit_feedback_proof({
+      session_id: solveSession,
+      guess_id: solveGuessId,
+      exact: solveFeedback.exact,
+      partial: solveFeedback.partial,
+      proof_blob: solveProofBlob,
+    }));
+    await solveProofTx.signAndSend();
   });
-  await (await player1Client.submit_feedback_proof({
-    session_id: solveSession,
-    guess_id: solveGuessId,
-    exact: solveFeedback.exact,
-    partial: solveFeedback.partial,
-    proof_blob: solveProofBlob,
-  })).signAndSend();
 
-  const solveAfter = await fetchGameState(player1Client, solveSession);
+  const solveAfter = await waitForGameCondition(
+    'scenario 1 final state',
+    player1Client,
+    solveSession,
+    (game) => !!game.ended,
+  );
   assertCond(!!solveAfter.ended, 'solve scenario: game should be ended');
   assertCond(!!solveAfter.solved, 'solve scenario: solved should be true');
   assertCond(solveAfter.winner === p2.publicKey(), 'solve scenario: winner should be player2');
@@ -410,19 +464,28 @@ async function run() {
   ];
 
   await startGame(startClient, p1, failSession, p1.publicKey(), p2.publicKey(), stake);
-  await (await player1Client.commit_code({ session_id: failSession, commitment: commitmentBytes })).signAndSend();
+  await submitWithRetry('submit commit_code tx (scenario 2)', async () => {
+    await (await player1Client.commit_code({ session_id: failSession, commitment: commitmentBytes })).signAndSend();
+  });
 
   for (let i = 0; i < failGuesses.length; i++) {
     const guess = failGuesses[i];
     const fb = computeFeedback(secret, guess);
     assertCond(!(fb.exact === 4), `fail scenario attempt ${i} unexpectedly solves`);
 
-    await (await player2Client.submit_guess({ session_id: failSession, guess: Buffer.from(guess) })).signAndSend();
-    const before = await fetchGameState(player1Client, failSession);
+    await submitWithRetry(`submit submit_guess tx (scenario 2, attempt ${i + 1})`, async () => {
+      await (await player2Client.submit_guess({ session_id: failSession, guess: Buffer.from(guess) })).signAndSend();
+    });
+    const before = await waitForGameCondition(
+      `scenario 2 pending guess visible (loop ${i + 1})`,
+      player1Client,
+      failSession,
+      (game) => Number(game.pending_guess_id) === i,
+    );
     const guessId = Number(before.pending_guess_id);
     assertCond(guessId === i, `fail scenario attempt ${i}: expected guess_id=${i}, got ${String(before.pending_guess_id)}`);
 
-    const proofBlob = proveTurn({
+    const proofBlob = await proveTurn({
       sessionId: failSession,
       guessId,
       commitmentDec,
@@ -433,16 +496,23 @@ async function run() {
       salt,
     });
 
-    await (await player1Client.submit_feedback_proof({
-      session_id: failSession,
-      guess_id: guessId,
-      exact: fb.exact,
-      partial: fb.partial,
-      proof_blob: proofBlob,
-    })).signAndSend();
+    await submitWithRetry(`submit submit_feedback_proof tx (scenario 2, attempt ${i + 1})`, async () => {
+      await (await player1Client.submit_feedback_proof({
+        session_id: failSession,
+        guess_id: guessId,
+        exact: fb.exact,
+        partial: fb.partial,
+        proof_blob: proofBlob,
+      })).signAndSend();
+    });
   }
 
-  const failAfter = await fetchGameState(player1Client, failSession);
+  const failAfter = await waitForGameCondition(
+    'scenario 2 final state',
+    player1Client,
+    failSession,
+    (game) => !!game.ended,
+  );
   assertCond(!!failAfter.ended, 'fail scenario: game should be ended');
   assertCond(!failAfter.solved, 'fail scenario: solved should be false');
   assertCond(failAfter.winner === p1.publicKey(), 'fail scenario: winner should be player1');
@@ -455,27 +525,38 @@ async function run() {
   const attackFeedback = computeFeedback(secret, attackGuess);
 
   await startGame(startClient, p1, attackSession, p1.publicKey(), p2.publicKey(), stake);
-  await (await player1Client.commit_code({ session_id: attackSession, commitment: commitmentBytes })).signAndSend();
+  await submitWithRetry('submit commit_code tx (scenario 3)', async () => {
+    await (await player1Client.commit_code({ session_id: attackSession, commitment: commitmentBytes })).signAndSend();
+  });
 
-  await (await player2Client.submit_guess({ session_id: attackSession, guess: Buffer.from(attackGuess) })).signAndSend();
+  await submitWithRetry('submit submit_guess tx (scenario 3)', async () => {
+    await (await player2Client.submit_guess({ session_id: attackSession, guess: Buffer.from(attackGuess) })).signAndSend();
+  });
   await expectContractFailure(
     'double guess while pending feedback',
     async () => {
-      await (await player2Client.submit_guess({ session_id: attackSession, guess: Buffer.from([4, 3, 2, 1]) })).signAndSend();
+      await submitWithRetry('submit submit_guess tx (scenario 3 double guess)', async () => {
+        await (await player2Client.submit_guess({ session_id: attackSession, guess: Buffer.from([4, 3, 2, 1]) })).signAndSend();
+      });
     },
     [6], // GuessPendingFeedback
   );
 
-  const attackBefore = await fetchGameState(player1Client, attackSession);
+  const attackBefore = await waitForGameCondition(
+    'scenario 3 pending guess visible',
+    player1Client,
+    attackSession,
+    (game) => game.pending_guess_id !== undefined && game.pending_guess_id !== null,
+  );
   const attackGuessId = Number(attackBefore.pending_guess_id);
 
   // Try to prove a lie directly: this should fail during proving.
   const liedExact = attackFeedback.exact === 4 ? 3 : attackFeedback.exact + 1;
   const liedPartial = attackFeedback.partial;
-  expectProverFailure(
+  await expectProverFailure(
     'prove a lie (wrong exact/partial)',
-    () => {
-      proveTurn({
+    async () => {
+      await proveTurn({
         sessionId: attackSession,
         guessId: attackGuessId,
         commitmentDec,
@@ -488,7 +569,7 @@ async function run() {
     },
   );
 
-  const validAttackProof = proveTurn({
+  const validAttackProof = await proveTurn({
     sessionId: attackSession,
     guessId: attackGuessId,
     commitmentDec,
@@ -502,13 +583,15 @@ async function run() {
   await expectContractFailure(
     'wrong guess_id in feedback proof',
     async () => {
-      await (await player1Client.submit_feedback_proof({
-        session_id: attackSession,
-        guess_id: attackGuessId + 1,
-        exact: attackFeedback.exact,
-        partial: attackFeedback.partial,
-        proof_blob: validAttackProof,
-      })).signAndSend();
+      await submitWithRetry('submit wrong guess_id feedback tx (scenario 3)', async () => {
+        await (await player1Client.submit_feedback_proof({
+          session_id: attackSession,
+          guess_id: attackGuessId + 1,
+          exact: attackFeedback.exact,
+          partial: attackFeedback.partial,
+          proof_blob: validAttackProof,
+        })).signAndSend();
+      });
     },
     [8], // InvalidGuessId
   );
@@ -516,13 +599,15 @@ async function run() {
   await expectContractFailure(
     'tampered feedback values with otherwise valid proof',
     async () => {
-      await (await player1Client.submit_feedback_proof({
-        session_id: attackSession,
-        guess_id: attackGuessId,
-        exact: 0,
-        partial: 0,
-        proof_blob: validAttackProof,
-      })).signAndSend();
+      await submitWithRetry('submit tampered feedback tx (scenario 3)', async () => {
+        await (await player1Client.submit_feedback_proof({
+          session_id: attackSession,
+          guess_id: attackGuessId,
+          exact: 0,
+          partial: 0,
+          proof_blob: validAttackProof,
+        })).signAndSend();
+      });
     },
     [10], // InvalidPublicInputs
   );
@@ -532,25 +617,29 @@ async function run() {
   await expectContractFailure(
     'tampered proof bytes',
     async () => {
-      await (await player1Client.submit_feedback_proof({
-        session_id: attackSession,
-        guess_id: attackGuessId,
-        exact: attackFeedback.exact,
-        partial: attackFeedback.partial,
-        proof_blob: tamperedProof,
-      })).signAndSend();
+      await submitWithRetry('submit tampered proof tx (scenario 3)', async () => {
+        await (await player1Client.submit_feedback_proof({
+          session_id: attackSession,
+          guess_id: attackGuessId,
+          exact: attackFeedback.exact,
+          partial: attackFeedback.partial,
+          proof_blob: tamperedProof,
+        })).signAndSend();
+      });
     },
     [11], // InvalidProof
   );
 
   // Submit correct proof to ensure scenario state remains usable after rejected attacks.
-  await (await player1Client.submit_feedback_proof({
-    session_id: attackSession,
-    guess_id: attackGuessId,
-    exact: attackFeedback.exact,
-    partial: attackFeedback.partial,
-    proof_blob: validAttackProof,
-  })).signAndSend();
+  await submitWithRetry('submit submit_feedback_proof tx (scenario 3)', async () => {
+    await (await player1Client.submit_feedback_proof({
+      session_id: attackSession,
+      guess_id: attackGuessId,
+      exact: attackFeedback.exact,
+      partial: attackFeedback.partial,
+      proof_blob: validAttackProof,
+    })).signAndSend();
+  });
   console.log('  ✅ Scenario 3 passed');
 
   console.log('\n✅ Integration scenarios passed');
